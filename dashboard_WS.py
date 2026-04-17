@@ -102,25 +102,35 @@ def _ws_thread_fn(symbol: str, is_inverse: bool):
     url   = ("wss://stream.bybit.com/v5/public/inverse" if is_inverse
              else "wss://stream.bybit.com/v5/public/linear")
 
-    def on_open(ws):
-        with state["lock"]:
-            state["ws_info"]["connected"] = True
-            state["ws_info"]["error"]     = ""
-        ws.send(json.dumps({
-            "op":   "subscribe",
-            "args": [f"kline.1.{symbol}", f"tickers.{symbol}"],
-        }))
+    while True:
+        def on_open(ws):
+            with state["lock"]:
+                state["ws_info"]["connected"] = True
+                state["ws_info"]["error"]     = ""
+            ws.send(json.dumps({
+                "op":   "subscribe",
+                "args": [f"kline.1.{symbol}", f"tickers.{symbol}"],
+            }))
 
-    ws = websocket.WebSocketApp(
-        url,
-        on_message=_on_message,
-        on_open=on_open,
-        on_close=_on_close,
-        on_error=_on_error,
-    )
-    with state["lock"]:
-        state["ws_info"]["ws"] = ws
-    ws.run_forever()
+        ws = websocket.WebSocketApp(
+            url,
+            on_message=_on_message,
+            on_open=on_open,
+            on_close=_on_close,
+            on_error=_on_error,
+        )
+        with state["lock"]:
+            state["ws_info"]["ws"] = ws
+        ws.run_forever()
+
+        # run_forever() returned — connection dropped
+        with state["lock"]:
+            if not state["running"]:
+                break  # user pressed Stop — exit cleanly
+            state["ws_info"]["connected"] = False
+            state["ws_info"]["error"]     = "Connection lost — reconnecting in 5 s…"
+
+        time.sleep(5)  # brief pause before reconnect attempt
 
 
 def ws_start(symbol: str, is_inverse: bool):
