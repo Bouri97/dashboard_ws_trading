@@ -714,8 +714,34 @@ if ot:
         st.info(f"🔔 Trailing TP active — peak €{ot['trail_peak']:,.4f} | "
                 f"trail stop €{ot['trail_peak'] * (1 - trail_pct / 100):,.4f}")
 
-    with st.expander("Order-level detail"):
-        st.dataframe(pd.DataFrame(ot["micro_orders"]), use_container_width=True, hide_index=True)
+    # ── Next pending SO trigger prices ───────────────────────────────────────
+    _pending_sos = ot["ladder"][ot["ladder_idx"]:]
+    if _pending_sos:
+        st.markdown("**Pending Safety Orders**")
+        _so_cols = st.columns(min(len(_pending_sos), 5))
+        for _si, (_sp, _se) in enumerate(_pending_sos[:5]):
+            _drop_pct = (live_price - _sp) / live_price * 100
+            _so_cols[_si].metric(
+                f"SO #{ot['ladder_idx'] + _si + 1}",
+                f"€{_sp:,.4f}",
+                delta=f"{_drop_pct:.2f}% away",
+                delta_color="inverse",
+                help=f"Size: €{_se:.2f}",
+            )
+    else:
+        st.caption("All safety orders filled.")
+
+    with st.expander("📋 Order-level detail", expanded=False):
+        _mo_df = pd.DataFrame(ot["micro_orders"])
+        st.dataframe(
+            _mo_df.style.format({
+                "price": "€{:.4f}",
+                "eur":   "€{:.2f}",
+                "coins": "{:.6f}",
+            }),
+            use_container_width=True,
+            hide_index=True,
+        )
 else:
     st.info("⏳ No open trade — waiting for next entry signal.")
 
@@ -736,6 +762,7 @@ if state["closed_trades"]:
                 "fees":             "€{:.2f}",
                 "capital_deployed": "€{:.2f}",
                 "roi_pct":          "{:.3f}%",
+                "sos_filled":       "{:.0f}",
             })
             .map(lambda v: "color: #2ecc71" if isinstance(v, float) and v > 0 else
                            "color: #e74c3c" if isinstance(v, float) and v < 0 else "",
