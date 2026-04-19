@@ -116,9 +116,9 @@ deviation_pct     = st.sidebar.number_input(
 step_multiplier   = st.sidebar.number_input(
     "Step Multiplier", value=0.9, min_value=0.1, step=0.1, key="pt_step")
 volume_scale      = st.sidebar.number_input(
-    "Volume Scale", value=1.05, min_value=1.0, step=0.01, key="pt_vs")
+    "Volume Scale", value=1.26, min_value=1.0, step=0.01, key="pt_vs")
 take_profit_pct   = st.sidebar.number_input(
-    "Take Profit (%)", value=10.0, min_value=0.01, step=0.1, key="pt_tp")
+    "Take Profit (%)", value=1.46, min_value=0.01, step=0.01, key="pt_tp")
 max_safety_orders = st.sidebar.slider("Max Safety Orders", 1, 20, 10, key="pt_maxso")
 
 # ── Entry filters ─────────────────────────────────────────────────────────────
@@ -203,8 +203,15 @@ bot_running = st.sidebar.toggle(
     help="When ON the page auto-refreshes and processes new candles automatically",
 )
 if st.sidebar.button("🔄 Reset — clear all trades & balance", key="pt_reset"):
-    if STATE_FILE.exists():
-        STATE_FILE.unlink()
+    fresh = _default_state(initial_balance)
+    try:
+        save_state(fresh)
+    except Exception:
+        pass
+    # Also clear from session state so the in-memory copy is gone
+    for _k in list(st.session_state.keys()):
+        if _k.startswith("_pt_state"):
+            del st.session_state[_k]
     st.rerun()
 
 
