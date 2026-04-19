@@ -55,6 +55,7 @@ def _default_state(bal: float) -> dict:
         "trade_number":     1,
         "log":              [],
         "bot_running":      False,
+        "last_entry_candle_ms": 0,   # prevents re-entering the same candle period
     }
 
 def load_state() -> dict:
@@ -439,6 +440,9 @@ def process_candle(idx: int, candles: list, ind: dict, state: dict) -> None:
 
     if ot is None:
         # ── Try to open a new trade ───────────────────────────────────────────
+        # Don't re-enter if we already opened (and closed) a trade this candle period
+        if ts_ms == state.get("last_entry_candle_ms", 0):
+            return
         if not check_entry(idx, candles, ind):
             return
 
@@ -477,6 +481,7 @@ def process_candle(idx: int, candles: list, ind: dict, state: dict) -> None:
                 "coins": coins,
             }],
         }
+        state["last_entry_candle_ms"] = ts_ms
         _log(state, f"🟢 Trade #{state['trade_number']} OPENED — {trading_pair} @ €{close:,.4f} "
                     f"| Base €{base_eur:.2f} | Balance €{state['balance']:,.2f}")
         return   # exits checked from next candle onwards
@@ -614,26 +619,42 @@ if not all_candles:
     st.error("Could not fetch candles from Bitvavo. Check your connection.")
     st.stop()
 
-# The last candle is still forming — exclude it from processing
+# The last candle is still forming — used for live checks but not marked as closed
 closed_candles = all_candles[:-1]
 live_candle    = all_candles[-1]
 
-# ── Process any new closed candles ───────────────────────────────────────────
+# ── Process any new closed candles first ─────────────────────────────────────
 new_candles = [c for c in closed_candles if c["time"] > state["last_candle_time"]]
 
 if new_candles:
-    # Compute indicators on the full set (needed for warmup)
-    ind = compute_all_indicators(all_candles[:-1])   # indicators on closed candles only
-
+    ind_closed = compute_all_indicators(closed_candles)
     for candle in new_candles:
-        # Find the index of this candle in closed_candles
         idx = next((i for i, c in enumerate(closed_candles) if c["time"] == candle["time"]), None)
         if idx is None:
             continue
-        process_candle(idx, closed_candles, ind, state)
-
+        process_candle(idx, closed_candles, ind_closed, state)
     state["last_candle_time"] = closed_candles[-1]["time"]
     save_state(state)
+
+# ── Process the live (forming) candle on every refresh ───────────────────────
+# Uses the current price as close; high = max(open, current), low = min(open, current)
+# so SO fills and SL/TP are checked against live price movement within the candle.
+_lc_open  = live_candle["open"]
+_lc_price = live_candle["close"]   # latest tick — most recent price from API
+_live_as_candle = {
+    "time":   live_candle["time"],
+    "open":   _lc_open,
+    "high":   max(_lc_open, _lc_price),
+    "low":    min(_lc_open, _lc_price),
+    "close":  _lc_price,
+    "volume": live_candle.get("volume", 0.0),
+}
+# Append live candle to get valid indicator values at the live index
+_candles_with_live = closed_candles + [_live_as_candle]
+ind_live = compute_all_indicators(_candles_with_live)
+_live_idx = len(_candles_with_live) - 1
+process_candle(_live_idx, _candles_with_live, ind_live, state)
+save_state(state)
 
 # ── Live price ────────────────────────────────────────────────────────────────
 live_price   = live_candle["close"]
