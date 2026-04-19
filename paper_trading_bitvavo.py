@@ -158,8 +158,12 @@ refresh_secs = st.sidebar.selectbox(
     key="pt_refresh",
     help="How often the bot checks for newly closed candles",
 )
+# Read persisted running state so the toggle survives page refreshes
+_state_preview = load_state()
+_persisted_running = _state_preview.get("bot_running", False)
+
 bot_running = st.sidebar.toggle(
-    "▶️ Bot Running", value=False, key="pt_running",
+    "▶️ Bot Running", value=_persisted_running, key="pt_running",
     help="When ON the page auto-refreshes and processes new candles automatically",
 )
 if st.sidebar.button("🔄 Reset — clear all trades & balance", key="pt_reset"):
@@ -235,6 +239,7 @@ def _default_state(bal: float) -> dict:
         "last_candle_time": int(time.time() * 1000),  # start from now
         "trade_number":     1,
         "log":              [],
+        "bot_running":      False,
     }
 
 def load_state() -> dict:
@@ -584,6 +589,11 @@ def process_candle(idx: int, candles: list, ind: dict, state: dict) -> None:
 # MAIN — fetch, process, display
 # ─────────────────────────────────────────────────────────────────────────────
 state = load_state()
+
+# Persist the toggle state immediately so refreshes restore it correctly
+if state.get("bot_running") != bot_running:
+    state["bot_running"] = bot_running
+    save_state(state)
 
 # If initial_balance changed since last run (e.g. user reset sidebar),
 # only reset if there are no trades yet.
