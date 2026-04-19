@@ -43,6 +43,42 @@ st.caption("No real orders are placed. All trades are fully virtual.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# STATE MANAGEMENT  (defined early — used in sidebar before main section)
+# ─────────────────────────────────────────────────────────────────────────────
+def _default_state(bal: float) -> dict:
+    return {
+        "balance":          bal,
+        "initial_balance":  bal,
+        "open_trade":       None,
+        "closed_trades":    [],
+        "last_candle_time": int(time.time() * 1000),
+        "trade_number":     1,
+        "log":              [],
+        "bot_running":      False,
+    }
+
+def load_state() -> dict:
+    if STATE_FILE.exists():
+        try:
+            with open(STATE_FILE) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    # initial_balance not yet known here — use 1000 as safe fallback;
+    # main section corrects it if balance was never set.
+    return _default_state(1000.0)
+
+def save_state(state: dict) -> None:
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f, indent=2, default=str)
+
+def _log(state: dict, msg: str) -> None:
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    state["log"].insert(0, f"[{ts}] {msg}")
+    state["log"] = state["log"][:200]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # SIDEBAR — STRATEGY SETTINGS
 # ─────────────────────────────────────────────────────────────────────────────
 st.sidebar.header("⚙️ Strategy Settings")
@@ -227,38 +263,6 @@ def compute_atr(highs: pd.Series, lows: pd.Series, closes: pd.Series, period: in
     return tr.ewm(alpha=1 / period, min_periods=period).mean()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# STATE MANAGEMENT
-# ─────────────────────────────────────────────────────────────────────────────
-def _default_state(bal: float) -> dict:
-    return {
-        "balance":          bal,
-        "initial_balance":  bal,
-        "open_trade":       None,
-        "closed_trades":    [],
-        "last_candle_time": int(time.time() * 1000),  # start from now
-        "trade_number":     1,
-        "log":              [],
-        "bot_running":      False,
-    }
-
-def load_state() -> dict:
-    if STATE_FILE.exists():
-        try:
-            with open(STATE_FILE) as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return _default_state(initial_balance)
-
-def save_state(state: dict) -> None:
-    with open(STATE_FILE, "w") as f:
-        json.dump(state, f, indent=2, default=str)
-
-def _log(state: dict, msg: str) -> None:
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    state["log"].insert(0, f"[{ts}] {msg}")
-    state["log"] = state["log"][:200]   # keep last 200 entries
 
 
 # ─────────────────────────────────────────────────────────────────────────────
