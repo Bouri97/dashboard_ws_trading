@@ -486,9 +486,10 @@ def process_candle(idx: int, candles: list, ind: dict, state: dict) -> None:
         }
         _log(state, f"🟢 Trade #{state['trade_number']} OPENED — {trading_pair} @ €{close:,.4f} "
                     f"| Base €{base_eur:.2f} | Balance €{state['balance']:,.2f}")
-        return   # exits checked from next candle onwards
+        # Fall through — check SO fills and exits on this same candle
 
     # ── Manage open trade ─────────────────────────────────────────────────────
+    ot         = state["open_trade"]   # re-read in case it was just opened above
     ladder     = ot["ladder"]
     ladder_idx = ot["ladder_idx"]
 
@@ -639,16 +640,15 @@ if new_candles:
     save_state(state)
 
 # ── Process the live (forming) candle on every refresh ───────────────────────
-# Uses the current price as close; high = max(open, current), low = min(open, current)
-# so SO fills and SL/TP are checked against live price movement within the candle.
-_lc_open  = live_candle["open"]
-_lc_price = live_candle["close"]   # latest tick — most recent price from API
+# Use the actual intraday high/low from the API — these reflect the true price
+# range so far today, meaning SO trigger prices and SL/TP levels are checked
+# against real intraday moves rather than just open vs current price.
 _live_as_candle = {
     "time":   live_candle["time"],
-    "open":   _lc_open,
-    "high":   max(_lc_open, _lc_price),
-    "low":    min(_lc_open, _lc_price),
-    "close":  _lc_price,
+    "open":   live_candle["open"],
+    "high":   live_candle["high"],   # actual intraday high from Bitvavo
+    "low":    live_candle["low"],    # actual intraday low from Bitvavo
+    "close":  live_candle["close"],  # latest price
     "volume": live_candle.get("volume", 0.0),
 }
 # Append live candle to get valid indicator values at the live index
