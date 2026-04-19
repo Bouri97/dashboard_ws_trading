@@ -55,7 +55,6 @@ def _default_state(bal: float) -> dict:
         "trade_number":     1,
         "log":              [],
         "bot_running":      False,
-        "last_entry_candle_ms": 0,   # prevents re-entering the same candle period
     }
 
 def load_state() -> dict:
@@ -440,9 +439,6 @@ def process_candle(idx: int, candles: list, ind: dict, state: dict) -> None:
 
     if ot is None:
         # ── Try to open a new trade ───────────────────────────────────────────
-        # Don't re-enter if we already opened (and closed) a trade this candle period
-        if ts_ms == state.get("last_entry_candle_ms", 0):
-            return
         if not check_entry(idx, candles, ind):
             return
 
@@ -481,7 +477,6 @@ def process_candle(idx: int, candles: list, ind: dict, state: dict) -> None:
                 "coins": coins,
             }],
         }
-        state["last_entry_candle_ms"] = ts_ms
         _log(state, f"🟢 Trade #{state['trade_number']} OPENED — {trading_pair} @ €{close:,.4f} "
                     f"| Base €{base_eur:.2f} | Balance €{state['balance']:,.2f}")
         return   # exits checked from next candle onwards
