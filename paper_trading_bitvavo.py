@@ -640,15 +640,17 @@ if new_candles:
     save_state(state)
 
 # ── Process the live (forming) candle on every refresh ───────────────────────
-# Use the actual intraday high/low from the API — these reflect the true price
-# range so far today, meaning SO trigger prices and SL/TP levels are checked
-# against real intraday moves rather than just open vs current price.
+# Use close price as both high and low for the live candle.
+# The intraday high/low from Bitvavo reflect the full day's range, which may
+# include price moves that happened BEFORE the current trade was opened.
+# Using close (current price) only means SOs/TP/SL fire based on where price
+# actually is right now — not where it was earlier in the day.
 _live_as_candle = {
     "time":   live_candle["time"],
     "open":   live_candle["open"],
-    "high":   live_candle["high"],   # actual intraday high from Bitvavo
-    "low":    live_candle["low"],    # actual intraday low from Bitvavo
-    "close":  live_candle["close"],  # latest price
+    "high":   live_candle["close"],  # current price only — intraday high may predate entry
+    "low":    live_candle["close"],  # current price only — intraday low may predate entry
+    "close":  live_candle["close"],
     "volume": live_candle.get("volume", 0.0),
 }
 # Append live candle to get valid indicator values at the live index
