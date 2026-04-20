@@ -670,7 +670,7 @@ total_net    = sum(t["net_profit"]   for t in state["closed_trades"])
 total_trades = len(state["closed_trades"])
 win_rate     = (sum(1 for t in state["closed_trades"] if t["net_profit"] > 0) / total_trades * 100
                 if total_trades else 0.0)
-roi_overall  = (state["balance"] - state["initial_balance"]) / state["initial_balance"] * 100
+roi_overall  = total_net / state["initial_balance"] * 100
 
 m1, m2, m3, m4, m5, m6, m7 = st.columns(7)
 m1.metric("Balance",       f"€{state['balance']:,.2f}", delta=f"{roi_overall:+.2f}%")
