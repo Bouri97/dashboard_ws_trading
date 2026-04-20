@@ -103,6 +103,16 @@ def _ws_thread_fn(symbol: str, is_inverse: bool):
              else "wss://stream.bybit.com/v5/public/linear")
 
     while True:
+        stop_hb = threading.Event()
+
+        def _heartbeat(ws, stop_event):
+            """Send a JSON ping every 20 s — Bybit drops silent connections after ~30 s."""
+            while not stop_event.wait(20):
+                try:
+                    ws.send(json.dumps({"op": "ping"}))
+                except Exception:
+                    break
+
         def on_open(ws):
             with state["lock"]:
                 state["ws_info"]["connected"] = True
@@ -111,6 +121,7 @@ def _ws_thread_fn(symbol: str, is_inverse: bool):
                 "op":   "subscribe",
                 "args": [f"kline.1.{symbol}", f"tickers.{symbol}"],
             }))
+            threading.Thread(target=_heartbeat, args=(ws, stop_hb), daemon=True).start()
 
         ws = websocket.WebSocketApp(
             url,
@@ -122,6 +133,7 @@ def _ws_thread_fn(symbol: str, is_inverse: bool):
         with state["lock"]:
             state["ws_info"]["ws"] = ws
         ws.run_forever()
+        stop_hb.set()  # stop heartbeat for this connection
 
         # run_forever() returned — connection dropped
         with state["lock"]:
