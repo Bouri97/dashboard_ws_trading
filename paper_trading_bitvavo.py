@@ -672,13 +672,15 @@ win_rate     = (sum(1 for t in state["closed_trades"] if t["net_profit"] > 0) / 
                 if total_trades else 0.0)
 roi_overall  = (state["balance"] - state["initial_balance"]) / state["initial_balance"] * 100
 
-m1, m2, m3, m4, m5, m6 = st.columns(6)
+m1, m2, m3, m4, m5, m6, m7 = st.columns(7)
 m1.metric("Balance",       f"€{state['balance']:,.2f}", delta=f"{roi_overall:+.2f}%")
 m2.metric("Net Profit",    f"€{total_net:+,.2f}")
-m3.metric("Closed Trades", total_trades)
-m4.metric("Win Rate",      f"{win_rate:.1f}%")
-m5.metric("Live Price",    f"€{live_price:,.4f}", help=f"Currently forming {interval} candle")
-m6.metric("Last Candle",   last_ts)
+m3.metric("ROI",           f"{roi_overall:+.2f}%",
+          help=f"Net profit / start balance (€{state['initial_balance']:,.2f})")
+m4.metric("Closed Trades", total_trades)
+m5.metric("Win Rate",      f"{win_rate:.1f}%")
+m6.metric("Live Price",    f"€{live_price:,.4f}", help=f"Currently forming {interval} candle")
+m7.metric("Last Candle",   last_ts)
 
 st.divider()
 
