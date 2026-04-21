@@ -85,11 +85,14 @@ def _log(state: dict, msg: str) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SIDEBAR — API CREDENTIALS
+# API CREDENTIALS  (read from .streamlit/secrets.toml — never from the UI)
 # ─────────────────────────────────────────────────────────────────────────────
-st.sidebar.header("🔑 API Credentials")
-api_key    = st.sidebar.text_input("API Key",    type="password", key="lt_apikey")
-api_secret = st.sidebar.text_input("API Secret", type="password", key="lt_apisecret")
+try:
+    api_key    = st.secrets["BITVAVO_API_KEY"]
+    api_secret = st.secrets["BITVAVO_API_SECRET"]
+except KeyError:
+    st.error("API credentials not found. Add BITVAVO_API_KEY and BITVAVO_API_SECRET to .streamlit/secrets.toml")
+    st.stop()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # BITVAVO CLIENT
@@ -100,9 +103,10 @@ def _get_bitvavo(key: str, secret: str):
         from python_bitvavo_api.bitvavo import Bitvavo as _Bitvavo
         return _Bitvavo({"APIKEY": key, "APISECRET": secret})
     except ImportError:
+        st.error("python-bitvavo-api not installed. Run: pip install python-bitvavo-api")
         return None
 
-bitvavo = _get_bitvavo(api_key, api_secret) if api_key and api_secret else None
+bitvavo = _get_bitvavo(api_key, api_secret)
 
 def _bitvavo_ready() -> bool:
     return bitvavo is not None and bool(api_key) and bool(api_secret)
