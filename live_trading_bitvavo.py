@@ -731,9 +731,10 @@ except Exception:
 
 st.success("✅ Successfully connected to Bitvavo")
 
-# Persist confirmation across refreshes using session state
+# Persist confirmation across refreshes — read from state file so it
+# survives full page reloads (session state is lost on browser refresh)
 if "lt_confirmed" not in st.session_state:
-    st.session_state["lt_confirmed"] = False
+    st.session_state["lt_confirmed"] = state.get("confirmed", False)
 
 with st.expander("🔍 Account Overview — verify this is correct before trading",
                  expanded=not st.session_state["lt_confirmed"]):
@@ -766,6 +767,8 @@ with st.expander("🔍 Account Overview — verify this is correct before tradin
     )
     if _confirmed:
         st.session_state["lt_confirmed"] = True
+        state["confirmed"] = True
+        save_state(state)
     if not st.session_state["lt_confirmed"]:
         st.info("Check the box above to unlock the bot.")
         st.stop()
