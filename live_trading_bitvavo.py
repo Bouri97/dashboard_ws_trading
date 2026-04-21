@@ -731,7 +731,12 @@ except Exception:
 
 st.success("✅ Successfully connected to Bitvavo")
 
-with st.expander("🔍 Account Overview — verify this is correct before trading", expanded=True):
+# Persist confirmation across refreshes using session state
+if "lt_confirmed" not in st.session_state:
+    st.session_state["lt_confirmed"] = False
+
+with st.expander("🔍 Account Overview — verify this is correct before trading",
+                 expanded=not st.session_state["lt_confirmed"]):
     st.markdown("**Available balances on your Bitvavo account:**")
     _bal_cols = st.columns(min(len(_balances), 6))
     for _i, (_sym, _amt) in enumerate(_balances.items()):
@@ -754,7 +759,14 @@ with st.expander("🔍 Account Overview — verify this is correct before tradin
         icon="⚠️",
     )
 
-    if not st.checkbox("✅ I have verified my account and settings — I understand real money is at risk", key="lt_confirmed"):
+    _confirmed = st.checkbox(
+        "✅ I have verified my account and settings — I understand real money is at risk",
+        value=st.session_state["lt_confirmed"],
+        key="lt_confirmed_cb",
+    )
+    if _confirmed:
+        st.session_state["lt_confirmed"] = True
+    if not st.session_state["lt_confirmed"]:
         st.info("Check the box above to unlock the bot.")
         st.stop()
 
