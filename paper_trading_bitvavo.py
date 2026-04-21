@@ -15,6 +15,9 @@ import json
 import time
 import datetime as dt
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+AMS = ZoneInfo("Europe/Amsterdam")
 from pathlib import Path
 
 import pandas as pd
@@ -73,7 +76,7 @@ def save_state(state: dict) -> None:
         json.dump(state, f, indent=2, default=str)
 
 def _log(state: dict, msg: str) -> None:
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ts = datetime.now(AMS).strftime("%Y-%m-%d %H:%M:%S")
     state["log"].insert(0, f"[{ts}] {msg}")
     state["log"] = state["log"][:200]
 
@@ -440,7 +443,7 @@ def process_candle(idx: int, candles: list, ind: dict, state: dict) -> None:
     low    = candle["low"]
     close  = candle["close"]
     ts_ms  = candle["time"]
-    ts_str = datetime.fromtimestamp(ts_ms / 1000).strftime("%Y-%m-%d %H:%M")
+    ts_str = datetime.fromtimestamp(ts_ms / 1000, tz=AMS).strftime("%Y-%m-%d %H:%M")
 
     ot = state["open_trade"]
 
@@ -668,8 +671,8 @@ save_state(state)
 
 # ── Live price ────────────────────────────────────────────────────────────────
 live_price   = live_candle["close"]
-last_ts      = datetime.fromtimestamp(closed_candles[-1]["time"] / 1000).strftime("%Y-%m-%d %H:%M") if closed_candles else "—"
-next_refresh = datetime.now() + dt.timedelta(seconds=refresh_secs)
+last_ts      = datetime.fromtimestamp(closed_candles[-1]["time"] / 1000, tz=AMS).strftime("%Y-%m-%d %H:%M") if closed_candles else "—"
+next_refresh = datetime.now(AMS) + dt.timedelta(seconds=refresh_secs)
 
 # ── Header metrics ────────────────────────────────────────────────────────────
 total_net    = sum(t["net_profit"]   for t in state["closed_trades"])
@@ -784,7 +787,7 @@ if state["closed_trades"]:
     st.download_button(
         "⬇️ Download trades CSV",
         data=df_closed.to_csv(index=False).encode(),
-        file_name=f"paper_trades_{trading_pair}_{dt.datetime.now().strftime('%Y%m%d')}.csv",
+        file_name=f"paper_trades_{trading_pair}_{datetime.now(AMS).strftime('%Y%m%d')}.csv",
         mime="text/csv",
     )
 
