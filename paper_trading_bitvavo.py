@@ -486,7 +486,9 @@ def process_candle(idx: int, candles: list, ind: dict, state: dict) -> None:
         }
         _log(state, f"🟢 Trade #{state['trade_number']} OPENED — {trading_pair} @ €{close:,.4f} "
                     f"| Base €{base_eur:.2f} | Balance €{state['balance']:,.2f}")
-        # Fall through — check SO fills and exits on this same candle
+        # Entry price IS the close — no SO/TP/SL can have triggered yet.
+        # Return now; SOs and exits are checked on the next candle/refresh.
+        return
 
     # ── Manage open trade ─────────────────────────────────────────────────────
     ot         = state["open_trade"]   # re-read in case it was just opened above
@@ -658,6 +660,10 @@ _candles_with_live = closed_candles + [_live_as_candle]
 ind_live = compute_all_indicators(_candles_with_live)
 _live_idx = len(_candles_with_live) - 1
 process_candle(_live_idx, _candles_with_live, ind_live, state)
+# Mark the live candle as "seen" so that when it closes and becomes a closed
+# candle on the next refresh, it is NOT re-processed with its full high/low
+# range (which would cause SOs to fire against moves that predate the entry).
+state["last_candle_time"] = live_candle["time"]
 save_state(state)
 
 # ── Live price ────────────────────────────────────────────────────────────────
