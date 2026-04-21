@@ -349,7 +349,7 @@ def place_market_buy(market: str, eur_amount: float) -> dict | None:
     try:
         order = bitvavo.placeOrder(
             market, "buy", "market",
-            {"amountQuote": f"{eur_amount:.2f}"},
+            {"amountQuote": f"{eur_amount:.2f}", "operatorId": 1},
         )
         if isinstance(order, dict) and "errorCode" in order:
             st.error(f"Buy order failed: {order.get('error', order)}")
@@ -366,7 +366,7 @@ def place_market_sell(market: str, coin_amount: float) -> dict | None:
     try:
         order = bitvavo.placeOrder(
             market, "sell", "market",
-            {"amount": f"{coin_amount:.8f}"},
+            {"amount": f"{coin_amount:.8f}", "operatorId": 1},
         )
         if isinstance(order, dict) and "errorCode" in order:
             st.error(f"Sell order failed: {order.get('error', order)}")
