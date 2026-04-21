@@ -710,16 +710,53 @@ if state.get("bot_running") != bot_running:
 
 # ── API key guard ─────────────────────────────────────────────────────────────
 if not _bitvavo_ready():
-    st.warning("Enter your Bitvavo API Key and Secret in the sidebar to enable live trading.")
+    st.warning("API credentials not loaded. Check your secrets.toml file.")
     st.stop()
 
-# ── Fetch live EUR balance from Bitvavo ───────────────────────────────────────
-with st.spinner("Fetching account balance…"):
+# ── Connection test & account overview ───────────────────────────────────────
+with st.spinner("Connecting to Bitvavo…"):
     eur_balance = fetch_eur_balance()
 
 if eur_balance is None:
-    st.error("Could not fetch EUR balance from Bitvavo. Check your API credentials and permissions.")
+    st.error("Could not connect to Bitvavo. Check your API credentials and permissions.")
     st.stop()
+
+# Fetch all balances for account overview
+try:
+    _all_balances = bitvavo.balance({})
+    _balances = {b["symbol"]: float(b["available"]) for b in _all_balances
+                 if isinstance(b, dict) and float(b.get("available", 0)) > 0}
+except Exception:
+    _balances = {"EUR": eur_balance}
+
+st.success("✅ Successfully connected to Bitvavo")
+
+with st.expander("🔍 Account Overview — verify this is correct before trading", expanded=True):
+    st.markdown("**Available balances on your Bitvavo account:**")
+    _bal_cols = st.columns(min(len(_balances), 6))
+    for _i, (_sym, _amt) in enumerate(_balances.items()):
+        _bal_cols[_i % 6].metric(_sym, f"{_amt:,.4f}")
+
+    st.divider()
+    st.markdown("**Confirm the settings below before enabling the bot:**")
+    _c1, _c2, _c3 = st.columns(3)
+    _c1.metric("Trading Pair",    trading_pair)
+    _c2.metric("Candle Timeframe", interval)
+    _c3.metric("Take Profit",     f"{take_profit_pct}%")
+    _c4, _c5, _c6 = st.columns(3)
+    _c4.metric("Max Safety Orders", max_safety_orders)
+    _c5.metric("Stop Loss",       f"{stop_loss_pct}%" if stop_loss_enabled else "Off")
+    _c6.metric("Base Order",      f"{base_order_value}{'%' if order_mode == 'Percentage' else ' EUR'}")
+
+    st.warning(
+        "⚠️ Double-check everything above. Once you enable **▶️ Bot Running** in the sidebar, "
+        "real orders will be placed on your account.",
+        icon="⚠️",
+    )
+
+    if not st.checkbox("✅ I have verified my account and settings — I understand real money is at risk", key="lt_confirmed"):
+        st.info("Check the box above to unlock the bot.")
+        st.stop()
 
 # ── Fetch candles ─────────────────────────────────────────────────────────────
 with st.spinner(f"Fetching {trading_pair} {interval} candles…"):
