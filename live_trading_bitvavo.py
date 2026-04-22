@@ -675,11 +675,44 @@ def process_candle(idx: int, candles: list, ind: dict, state: dict, eur_balance:
             exit_reason = "Time Stop"
 
     if exit_price is not None:
-        # Fetch actual coin balance from Bitvavo to avoid "insufficient balance"
-        # errors caused by small rounding differences between tracked and real coins.
-        coin_symbol   = trading_pair.split("-")[0]  # e.g. "BTC" from "BTC-EUR"
-        actual_coins  = fetch_coin_balance(coin_symbol)
-        coins_to_sell = actual_coins if actual_coins > 0 else ot["total_coins"]
+        coin_symbol  = trading_pair.split("-")[0]  # e.g. "BTC" from "BTC-EUR"
+        actual_coins = fetch_coin_balance(coin_symbol)
+
+        # If we no longer hold coins, the sell already went through on Bitvavo
+        # (e.g. a previous retry succeeded but the response was lost).
+        # Close the trade in state using best available data.
+        if actual_coins < 0.000001:
+            proceeds     = close * ot["total_coins"]  # estimate using current price
+            sell_fee     = proceeds * 0.0025
+            ot["fees_paid"] += sell_fee
+            gross_profit = proceeds - ot["total_spent"]
+            net_profit   = gross_profit - sell_fee
+            closed = {
+                "trade":            ot["trade_number"],
+                "entry_time":       ot["entry_time"],
+                "exit_time":        ts_str,
+                "entry_price":      ot["entry_price"],
+                "avg_price":        avg,
+                "exit_price":       close,
+                "exit_reason":      exit_reason + " (recovered)",
+                "gross_profit":     round(gross_profit, 4),
+                "net_profit":       round(net_profit,   4),
+                "fees":             round(ot["fees_paid"], 4),
+                "capital_deployed": round(ot["total_spent"], 4),
+                "sos_filled":       ladder_idx,
+                "roi_pct":          round(net_profit / ot["total_spent"] * 100, 3),
+                "sell_order_id":    "recovered",
+            }
+            state["closed_trades"].append(closed)
+            emoji = "🟢" if net_profit >= 0 else "🔴"
+            _log(state, f"{emoji} Trade #{ot['trade_number']} CLOSED ({exit_reason} — recovered from missed response) "
+                        f"@ ~€{close:,.4f} | Est. Net P&L €{net_profit:+.2f}")
+            state["open_trade"]   = None
+            state["trade_number"] += 1
+            return
+
+        # Normal path — place the sell order
+        coins_to_sell = actual_coins
         order = place_market_sell(trading_pair, coins_to_sell)
         if order is None:
             _log(state, f"❌ Sell order failed ({exit_reason}) — will retry next refresh")
@@ -696,7 +729,7 @@ def process_candle(idx: int, candles: list, ind: dict, state: dict, eur_balance:
             "exit_time":        ts_str,
             "entry_price":      ot["entry_price"],
             "avg_price":        avg,
-            "exit_price":       proceeds / ot["total_coins"] if ot["total_coins"] > 0 else exit_price,
+            "exit_price":       proceeds / coins_to_sell if coins_to_sell > 0 else exit_price,
             "exit_reason":      exit_reason,
             "gross_profit":     round(gross_profit, 4),
             "net_profit":       round(net_profit,   4),
