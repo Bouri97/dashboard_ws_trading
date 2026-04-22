@@ -330,6 +330,18 @@ def fetch_eur_balance() -> float | None:
         st.error(f"Balance fetch failed: {e}")
     return None
 
+def fetch_coin_balance(symbol: str) -> float:
+    """Fetch available balance of a coin from Bitvavo (e.g. 'BTC')."""
+    if not _bitvavo_ready():
+        return 0.0
+    try:
+        result = bitvavo.balance({"symbol": symbol})
+        if isinstance(result, list) and result:
+            return float(result[0].get("available", 0))
+    except Exception:
+        pass
+    return 0.0
+
 def _parse_fills(order: dict) -> tuple[float, float, float]:
     """
     Parse a completed Bitvavo order response.
@@ -663,7 +675,12 @@ def process_candle(idx: int, candles: list, ind: dict, state: dict, eur_balance:
             exit_reason = "Time Stop"
 
     if exit_price is not None:
-        order = place_market_sell(trading_pair, ot["total_coins"])
+        # Fetch actual coin balance from Bitvavo to avoid "insufficient balance"
+        # errors caused by small rounding differences between tracked and real coins.
+        coin_symbol   = trading_pair.split("-")[0]  # e.g. "BTC" from "BTC-EUR"
+        actual_coins  = fetch_coin_balance(coin_symbol)
+        coins_to_sell = actual_coins if actual_coins > 0 else ot["total_coins"]
+        order = place_market_sell(trading_pair, coins_to_sell)
         if order is None:
             _log(state, f"❌ Sell order failed ({exit_reason}) — will retry next refresh")
             return
