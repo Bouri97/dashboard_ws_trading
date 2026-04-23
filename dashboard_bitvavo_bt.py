@@ -1841,8 +1841,7 @@ if run_opt_btn and date_from < date_to:
     _fmt = {"Net Profit (EUR)": "€{:.2f}", "Win Rate (%)": "{:.1f}%",
             "ROI (%)": "{:.2f}%", "Max DD (%)": "{:.2f}%"}
     st.dataframe(
-        df_trials.style.format(_fmt)
-                       .background_gradient(cmap="RdYlGn", subset=[opt_metric], axis=0),
+        df_trials.style.format(_fmt),
         use_container_width=True,
     )
     _dl_cols, _ = st.columns([1, 3])
