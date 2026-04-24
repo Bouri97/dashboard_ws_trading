@@ -206,6 +206,16 @@ candle_patterns = st.sidebar.multiselect(
         "Morning Star: 3-candle reversal pattern (bearish, small body, bullish)"
     ),
 )
+candle_vol_confirm = st.sidebar.checkbox(
+    "Volume Confirmation", value=False, key="candle_vol_confirm",
+    disabled=not candle_pattern_filter,
+    help="Pattern only counts if accompanied by above-average volume (volume > volume MA)",
+)
+candle_confirm_candle = st.sidebar.checkbox(
+    "Confirmation Candle", value=False, key="candle_confirm_candle",
+    disabled=not candle_pattern_filter,
+    help="Only enter if the candle AFTER the pattern closes in the bullish direction",
+)
 
 regime_filter = st.sidebar.checkbox(
     "Market Regime Filter", value=False, key="regime_filter",
@@ -232,6 +242,16 @@ adx_threshold = st.sidebar.number_input(
     key="adx_threshold",
     disabled=not regime_filter,
     help="ADX values above this indicate a trending market; below indicate ranging",
+)
+trend_direction_filter = st.sidebar.checkbox(
+    "Trend Direction Filter", value=False, key="trend_direction_filter",
+    disabled=not regime_filter,
+    help="Only enter when EMA slope confirms uptrend (EMA rising) — combines with regime filter",
+)
+trend_ema_period = st.sidebar.number_input(
+    "Trend EMA Period", value=50, min_value=2, step=1, key="trend_ema_period",
+    disabled=not (regime_filter and trend_direction_filter),
+    help="EMA period used to determine trend direction (slope > 0 = uptrend)",
 )
 
 bos_filter   = st.sidebar.checkbox("Break of Structure (BOS) Filter", value=False, key="bos_filter",
@@ -362,12 +382,14 @@ _PRESET_KEYS = [
     "sr_filter", "sr_lookback", "sr_proximity_pct",
     "ma_cross_filter", "ma_cross_type", "ma_fast_period", "ma_slow_period", "ma_cross_mode",
     "atr_dynamic", "atr_period", "atr_tp_mult", "atr_sl_mult",
-    "candle_pattern_filter", "candle_patterns",
+    "candle_pattern_filter", "candle_patterns", "candle_vol_confirm", "candle_confirm_candle",
     "regime_filter", "regime_mode", "adx_period", "adx_threshold",
+    "trend_direction_filter", "trend_ema_period",
     "trailing_tp", "trail_pct",
     "stop_loss_enabled", "stop_loss_pct",
     "time_stop_enabled", "time_stop_hours",
     "date_from", "date_to", "fee_rate_pct", "compounding",
+    "opt_min_trades",
 ]
 
 st.sidebar.divider()
@@ -476,6 +498,13 @@ with st.sidebar.expander("🤖 Auto-Optimizer", expanded=False):
         help=(
             "Composite (Profit × Sharpe): optimises net_profit × sharpe_ratio (both normalised) "
             "to prevent overfitting to a single metric."
+        ),
+    )
+    opt_min_trades = st.number_input(
+        "Min Trades (penalty)", value=5, min_value=1, step=1, key="opt_min_trades",
+        help=(
+            "Trials with fewer than this number of trades are penalised. "
+            "Prevents the optimizer from picking strategies that got lucky on 1–2 trades."
         ),
     )
     opt_trials = st.number_input(
@@ -851,13 +880,17 @@ class DCASpotBacktester:
         self.atr_tp_mult      = params["atr_tp_mult"]
         self.atr_sl_mult      = params["atr_sl_mult"]
         # Candlestick pattern filter
-        self.candle_pattern_filter = params["candle_pattern_filter"]
-        self.candle_patterns       = params["candle_patterns"]
+        self.candle_pattern_filter  = params["candle_pattern_filter"]
+        self.candle_patterns        = params["candle_patterns"]
+        self.candle_vol_confirm     = params.get("candle_vol_confirm", False)
+        self.candle_confirm_candle  = params.get("candle_confirm_candle", False)
         # Market regime filter
-        self.regime_filter    = params["regime_filter"]
-        self.regime_mode      = params["regime_mode"]
-        self.adx_period       = params["adx_period"]
-        self.adx_threshold    = params["adx_threshold"]
+        self.regime_filter          = params["regime_filter"]
+        self.regime_mode            = params["regime_mode"]
+        self.adx_period             = params["adx_period"]
+        self.adx_threshold          = params["adx_threshold"]
+        self.trend_direction_filter = params.get("trend_direction_filter", False)
+        self.trend_ema_period       = params.get("trend_ema_period", 50)
         # Leverage & timeframe
         self.leverage        = params["leverage"]
         self.candle_min      = params["candle_min"]
@@ -942,17 +975,34 @@ class DCASpotBacktester:
         # Candlestick pattern filter — pre-compute boolean signal
         opens = pd.Series([c["open"] for c in candles])
         if self.candle_pattern_filter and self.candle_patterns:
-            candle_sig_vals = compute_candlestick_patterns(
+            candle_sig_raw = compute_candlestick_patterns(
                 opens, highs, lows, closes, self.candle_patterns
-            ).tolist()
+            )
+            # Volume confirmation: pattern only valid when volume > volume MA
+            if self.candle_vol_confirm:
+                vol_ma_cp = compute_sma(volumes, self.volume_ma_period if self.volume_filter else 20)
+                candle_sig_raw = candle_sig_raw & (volumes > vol_ma_cp)
+            # Confirmation candle: shift signal forward by 1 — enter on the candle
+            # AFTER the pattern, which must close bullish
+            if self.candle_confirm_candle:
+                next_bullish = (closes > opens)  # current candle is bullish
+                candle_sig_raw = candle_sig_raw.shift(1).fillna(False) & next_bullish
+            candle_sig_vals = candle_sig_raw.tolist()
         else:
             candle_sig_vals = [True] * len(closes)   # sentinel: always passes
 
-        # Market regime filter — pre-compute ADX
+        # Market regime filter — pre-compute ADX and optional EMA slope
         if self.regime_filter and self.regime_mode != "Any":
             adx_vals = compute_adx(highs, lows, closes, self.adx_period).tolist()
         else:
             adx_vals = [0.0] * len(closes)   # sentinel
+
+        # Trend direction: EMA slope (current EMA > previous EMA = uptrend)
+        if self.regime_filter and self.trend_direction_filter:
+            trend_ema = compute_ema(closes, self.trend_ema_period)
+            trend_up_vals = (trend_ema > trend_ema.shift(1)).tolist()
+        else:
+            trend_up_vals = [True] * len(closes)   # sentinel
 
         trades, equity_curve, micro_trades = [], [self.balance], []
         i = 0
@@ -1046,8 +1096,11 @@ class DCASpotBacktester:
             else:
                 regime_ok = True
 
+            # Trend direction filter (EMA slope)
+            trend_ok = not (self.regime_filter and self.trend_direction_filter) or bool(trend_up_vals[i])
+
             if not (rsi_ok and sma_ok and ema_ok and vol_ok and bb_ok and macd_ok
-                    and bos_ok and sr_ok and ma_cross_ok and candle_ok and regime_ok):
+                    and bos_ok and sr_ok and ma_cross_ok and candle_ok and regime_ok and trend_ok):
                 i += 1
                 continue
 
@@ -1327,13 +1380,17 @@ if run_button and date_from < date_to:
         "atr_period":        int(atr_period),
         "atr_tp_mult":       atr_tp_mult,
         "atr_sl_mult":       atr_sl_mult,
-        "candle_pattern_filter": candle_pattern_filter,
-        "candle_patterns":       list(candle_patterns),
-        "regime_filter":     regime_filter,
-        "regime_mode":       regime_mode,
-        "adx_period":        int(adx_period),
-        "adx_threshold":     adx_threshold,
-        "trailing_tp":       trailing_tp,
+        "candle_pattern_filter":  candle_pattern_filter,
+        "candle_patterns":        list(candle_patterns),
+        "candle_vol_confirm":     candle_vol_confirm,
+        "candle_confirm_candle":  candle_confirm_candle,
+        "regime_filter":          regime_filter,
+        "regime_mode":            regime_mode,
+        "adx_period":             int(adx_period),
+        "adx_threshold":          adx_threshold,
+        "trend_direction_filter": trend_direction_filter,
+        "trend_ema_period":       int(trend_ema_period),
+        "trailing_tp":            trailing_tp,
         "trail_pct":         trail_pct,
         "stop_loss_enabled": stop_loss_enabled,
         "stop_loss_pct":     stop_loss_pct,
@@ -1681,12 +1738,16 @@ if run_opt_btn and date_from < date_to:
             "atr_period":        int(atr_period),
             "atr_tp_mult":       float(atr_tp) if atr_tp is not None else atr_tp_mult,
             "atr_sl_mult":       float(atr_sl) if atr_sl is not None else atr_sl_mult,
-            "candle_pattern_filter": candle_pattern_filter,
-            "candle_patterns":       list(candle_patterns),
-            "regime_filter":     regime_filter,
-            "regime_mode":       regime_mode,
-            "adx_period":        int(adx_period),
-            "adx_threshold":     float(adx_thr) if adx_thr is not None else adx_threshold,
+            "candle_pattern_filter":  candle_pattern_filter,
+            "candle_patterns":        list(candle_patterns),
+            "candle_vol_confirm":     candle_vol_confirm,
+            "candle_confirm_candle":  candle_confirm_candle,
+            "regime_filter":          regime_filter,
+            "regime_mode":            regime_mode,
+            "adx_period":             int(adx_period),
+            "adx_threshold":          float(adx_thr) if adx_thr is not None else adx_threshold,
+            "trend_direction_filter": trend_direction_filter,
+            "trend_ema_period":       int(trend_ema_period),
             "trailing_tp":       trailing_tp,
             "trail_pct":         trail_pct,
             "stop_loss_enabled": stop_loss_enabled,
@@ -1712,11 +1773,13 @@ if run_opt_btn and date_from < date_to:
         sr_v  = sharpe_ratio(df_r["roi_pct"], n_tr / max(days / 365, 0.01))
         pf_v  = profit_factor(df_r["net_profit_eur"])
         cal_v = ann_v / dd_v if dd_v > 0 else 0.0
-        # Composite: product of normalised net profit and Sharpe Ratio.
-        # Normalise net by initial_balance so both factors are dimensionless.
+        # Minimum trade count penalty — scale score down for low trade counts
+        # penalty = min(1, trades / min_trades) so 0 trades = 0, min_trades+ = 1
+        trade_penalty = min(1.0, n_tr / max(int(opt_min_trades), 1))
+        # Composite: product of normalised net profit and Sharpe Ratio × penalty
         norm_net  = net_v / max(initial_balance, 1.0)
-        comp_v    = norm_net * sr_v
-        return {"net": net_v, "wr": wr_v, "roi": roi_v, "dd": dd_v,
+        comp_v    = norm_net * sr_v * trade_penalty
+        return {"net": net_v * trade_penalty, "wr": wr_v, "roi": roi_v, "dd": dd_v,
                 "ann_roi": ann_v, "sharpe": sr_v,
                 "pf": min(pf_v, 999.0), "calmar": cal_v, "trades": n_tr,
                 "composite": comp_v}
