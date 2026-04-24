@@ -902,6 +902,17 @@ class DCASpotBacktester:
         self.time_stop       = params["time_stop_enabled"]
         self.time_stop_min   = params["time_stop_hours"] * 60
 
+    @staticmethod
+    def _build_ladder_static(entry: float, so_base: float, deviation_pct: float,
+                              step_multiplier: float, volume_scale: float, max_so: int) -> list:
+        """Standalone ladder builder — used by the price chart without a full engine instance."""
+        ladder, cum, alloc = [], 0.0, so_base
+        for n in range(max_so):
+            cum   += (deviation_pct / 100) * (step_multiplier ** n)
+            ladder.append((entry * (1 - cum), alloc))
+            alloc *= volume_scale
+        return ladder
+
     def _get_order_sizes(self):
         ref = self.balance if self.compounding else self.initial_balance
         if self.order_mode == "Percentage":
@@ -1494,114 +1505,240 @@ if run_button and date_from < date_to:
             import plotly.graph_objects as _go
             from plotly.subplots import make_subplots as _make_subplots
 
-            # Build price series from candles (sample down to max 2000 points for performance)
+            # Build price series (sample down to max 2000 points for performance)
             _step   = max(len(candles) // 2000, 1)
-            _times  = [datetime.fromtimestamp(c["time"] / 1000) for c in candles[::_step]]
+            _ctimes = [datetime.fromtimestamp(c["time"] / 1000) for c in candles[::_step]]
             _prices = [c["close"] for c in candles[::_step]]
 
-            # Cumulative P&L over time (aligned to exit times)
-            _df_sorted  = df.sort_values("exit_time").copy()
+            # Pre-compute ADX for regime background coloring
+            _closes_s  = pd.Series([c["close"] for c in candles])
+            _highs_s   = pd.Series([c["high"]  for c in candles])
+            _lows_s    = pd.Series([c["low"]   for c in candles])
+            _adx_full  = compute_adx(_highs_s, _lows_s, _closes_s, int(adx_period)).tolist()
+            _adx_thr   = float(adx_threshold)
+
+            # Cumulative P&L
+            _df_sorted = df.sort_values("exit_time").copy()
             _df_sorted["cum_pnl"] = _df_sorted["net_profit_eur"].cumsum()
 
-            _fig = _make_subplots(
-                rows=2, cols=1,
-                shared_xaxes=True,
-                row_heights=[0.65, 0.35],
-                vertical_spacing=0.05,
-                subplot_titles=("Price + Trade Signals", "Cumulative P&L (EUR)"),
+            # Rolling win rate (10-trade window)
+            _df_sorted["rolling_wr"] = (
+                (_df_sorted["net_profit_eur"] > 0)
+                .rolling(10, min_periods=1).mean() * 100
             )
+
+            _fig = _make_subplots(
+                rows=3, cols=1,
+                shared_xaxes=True,
+                row_heights=[0.55, 0.25, 0.20],
+                vertical_spacing=0.04,
+                subplot_titles=(
+                    "Price + Trade Signals + SO Ladders",
+                    "Cumulative P&L (EUR)",
+                    "Rolling Win Rate (10 trades)",
+                ),
+            )
+
+            # ── Regime background shading ─────────────────────────────────────
+            # Build contiguous trending/ranging bands and shade them
+            _in_trend = None
+            _band_start = None
+            for _bi, (_bt, _bp, _badx) in enumerate(zip(_ctimes, _prices, _adx_full[::_step])):
+                _is_trend = (_badx == _badx) and (_badx > _adx_thr)  # NaN check
+                if _in_trend is None:
+                    _in_trend, _band_start = _is_trend, _bt
+                elif _is_trend != _in_trend:
+                    _color = "rgba(74,144,217,0.10)" if _in_trend else "rgba(255,200,0,0.08)"
+                    _fig.add_vrect(
+                        x0=_band_start, x1=_bt,
+                        fillcolor=_color, opacity=1.0, line_width=0,
+                        row=1, col=1,
+                    )
+                    _in_trend, _band_start = _is_trend, _bt
+            if _band_start is not None and _ctimes:
+                _color = "rgba(74,144,217,0.10)" if _in_trend else "rgba(255,200,0,0.08)"
+                _fig.add_vrect(
+                    x0=_band_start, x1=_ctimes[-1],
+                    fillcolor=_color, opacity=1.0, line_width=0,
+                    row=1, col=1,
+                )
 
             # ── Price line ────────────────────────────────────────────────────
             _fig.add_trace(_go.Scatter(
-                x=_times, y=_prices,
-                mode="lines",
-                name="BTC Price",
+                x=_ctimes, y=_prices,
+                mode="lines", name="BTC Price",
                 line=dict(color="#4a90d9", width=1),
                 hovertemplate="%{x|%Y-%m-%d %H:%M}<br>€%{y:,.2f}<extra></extra>",
             ), row=1, col=1)
 
-            # ── Entry markers (green triangles up) ───────────────────────────
-            _entries_win  = df[df["net_profit_eur"] >= 0]
-            _entries_loss = df[df["net_profit_eur"] <  0]
+            # ── Safety Order ladders ──────────────────────────────────────────
+            # Draw SO levels for each trade as faint horizontal segments
+            _ladder_shown = False
+            for _, _tr in df.iterrows():
+                _e_price  = _tr["entry_price"]
+                _tp_price = _tr["tp_price"]
+                _e_time   = _tr["entry_time"]
+                _x_time   = _tr["exit_time"]
+                # TP line (green)
+                _fig.add_trace(_go.Scatter(
+                    x=[_e_time, _x_time], y=[_tp_price, _tp_price],
+                    mode="lines",
+                    line=dict(color="rgba(46,204,113,0.4)", width=1, dash="dot"),
+                    showlegend=not _ladder_shown,
+                    name="TP Level",
+                    hoverinfo="skip",
+                ), row=1, col=1)
+                # SO ladder lines (orange, fading per level)
+                _so_ladder = DCASpotBacktester._build_ladder_static(
+                    _e_price,
+                    params["safety_order"] if order_mode == "Fixed EUR"
+                    else initial_balance * params["safety_order"] / 100,
+                    params["deviation_pct"], params["step_multiplier"],
+                    params["volume_scale"],  params["max_safety_orders"],
+                )
+                for _si, (_so_px, _) in enumerate(_so_ladder):
+                    _alpha = max(0.05, 0.35 - _si * 0.05)
+                    _fig.add_trace(_go.Scatter(
+                        x=[_e_time, _x_time], y=[_so_px, _so_px],
+                        mode="lines",
+                        line=dict(color=f"rgba(230,126,34,{_alpha:.2f})", width=1, dash="dot"),
+                        showlegend=False,
+                        hoverinfo="skip",
+                    ), row=1, col=1)
+                _ladder_shown = True
 
+            # ── Entry / Exit markers ──────────────────────────────────────────
+            for _subset, _sym, _col, _lbl in [
+                (df[df["net_profit_eur"] >= 0], "triangle-up",   "#2ecc71", "Entry (win)"),
+                (df[df["net_profit_eur"] <  0], "triangle-up",   "#e67e22", "Entry (loss)"),
+            ]:
+                _fig.add_trace(_go.Scatter(
+                    x=_subset["entry_time"], y=_subset["entry_price"],
+                    mode="markers", name=_lbl,
+                    marker=dict(symbol=_sym, color=_col, size=9),
+                    hovertemplate=f"{_lbl}<br>%{{x|%Y-%m-%d %H:%M}}<br>€%{{y:,.4f}}<extra></extra>",
+                ), row=1, col=1)
+
+            for _subset, _sym, _col, _lbl in [
+                (df[df["net_profit_eur"] >= 0], "triangle-down", "#27ae60", "Exit (profit)"),
+                (df[df["net_profit_eur"] <  0], "triangle-down", "#e74c3c", "Exit (loss)"),
+            ]:
+                _fig.add_trace(_go.Scatter(
+                    x=_subset["exit_time"], y=_subset["exit_price"],
+                    mode="markers", name=_lbl,
+                    marker=dict(symbol=_sym, color=_col, size=9),
+                    customdata=_subset["net_profit_eur"],
+                    hovertemplate=(
+                        f"{_lbl}<br>%{{x|%Y-%m-%d %H:%M}}<br>€%{{y:,.4f}}"
+                        "<br>Net: €%{customdata:,.2f}<extra></extra>"
+                    ),
+                ), row=1, col=1)
+
+            # ── Cumulative P&L ────────────────────────────────────────────────
             _fig.add_trace(_go.Scatter(
-                x=_entries_win["entry_time"],
-                y=_entries_win["entry_price"],
-                mode="markers",
-                name="Entry (win)",
-                marker=dict(symbol="triangle-up", color="#2ecc71", size=9),
-                hovertemplate="Entry (win)<br>%{x|%Y-%m-%d %H:%M}<br>€%{y:,.4f}<extra></extra>",
-            ), row=1, col=1)
-
-            _fig.add_trace(_go.Scatter(
-                x=_entries_loss["entry_time"],
-                y=_entries_loss["entry_price"],
-                mode="markers",
-                name="Entry (loss)",
-                marker=dict(symbol="triangle-up", color="#e67e22", size=9),
-                hovertemplate="Entry (loss)<br>%{x|%Y-%m-%d %H:%M}<br>€%{y:,.4f}<extra></extra>",
-            ), row=1, col=1)
-
-            # ── Exit markers (red/green triangles down) ───────────────────────
-            _exits_win  = df[df["net_profit_eur"] >= 0]
-            _exits_loss = df[df["net_profit_eur"] <  0]
-
-            _fig.add_trace(_go.Scatter(
-                x=_exits_win["exit_time"],
-                y=_exits_win["exit_price"],
-                mode="markers",
-                name="Exit (profit)",
-                marker=dict(symbol="triangle-down", color="#27ae60", size=9),
-                hovertemplate=(
-                    "Exit ✅<br>%{x|%Y-%m-%d %H:%M}<br>€%{y:,.4f}"
-                    "<br>Net: €%{customdata:,.2f}<extra></extra>"
-                ),
-                customdata=_exits_win["net_profit_eur"],
-            ), row=1, col=1)
-
-            _fig.add_trace(_go.Scatter(
-                x=_exits_loss["exit_time"],
-                y=_exits_loss["exit_price"],
-                mode="markers",
-                name="Exit (loss)",
-                marker=dict(symbol="triangle-down", color="#e74c3c", size=9),
-                hovertemplate=(
-                    "Exit ❌<br>%{x|%Y-%m-%d %H:%M}<br>€%{y:,.4f}"
-                    "<br>Net: €%{customdata:,.2f}<extra></extra>"
-                ),
-                customdata=_exits_loss["net_profit_eur"],
-            ), row=1, col=1)
-
-            # ── Cumulative P&L line ───────────────────────────────────────────
-            _fig.add_trace(_go.Scatter(
-                x=_df_sorted["exit_time"],
-                y=_df_sorted["cum_pnl"],
-                mode="lines",
-                name="Cum. P&L",
+                x=_df_sorted["exit_time"], y=_df_sorted["cum_pnl"],
+                mode="lines", name="Cum. P&L",
                 line=dict(color="#f39c12", width=2),
-                fill="tozeroy",
-                fillcolor="rgba(243,156,18,0.15)",
+                fill="tozeroy", fillcolor="rgba(243,156,18,0.15)",
                 hovertemplate="%{x|%Y-%m-%d %H:%M}<br>€%{y:,.2f}<extra></extra>",
             ), row=2, col=1)
+            _fig.add_hline(y=0, line_dash="dash",
+                           line_color="rgba(255,255,255,0.3)", row=2, col=1)
 
-            # Zero line on P&L chart
-            _fig.add_hline(y=0, line_dash="dash", line_color="rgba(255,255,255,0.3)", row=2, col=1)
+            # ── Rolling Win Rate ──────────────────────────────────────────────
+            _fig.add_trace(_go.Scatter(
+                x=_df_sorted["exit_time"], y=_df_sorted["rolling_wr"],
+                mode="lines", name="Win Rate (10T)",
+                line=dict(color="#9b59b6", width=2),
+                hovertemplate="%{x|%Y-%m-%d %H:%M}<br>%{y:.1f}%<extra></extra>",
+            ), row=3, col=1)
+            _fig.add_hline(y=50, line_dash="dash",
+                           line_color="rgba(255,255,255,0.3)", row=3, col=1)
 
             _fig.update_layout(
-                height=600,
+                height=750,
                 template="plotly_dark",
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
                 margin=dict(l=0, r=0, t=40, b=0),
                 hovermode="x unified",
             )
-            _fig.update_yaxes(title_text="Price (EUR)", row=1, col=1)
-            _fig.update_yaxes(title_text="P&L (EUR)",   row=2, col=1)
-            _fig.update_xaxes(title_text="Date",        row=2, col=1)
+            _fig.update_yaxes(title_text="Price (EUR)",   row=1, col=1)
+            _fig.update_yaxes(title_text="P&L (EUR)",     row=2, col=1)
+            _fig.update_yaxes(title_text="Win Rate (%)",  row=3, col=1)
+            _fig.update_xaxes(title_text="Date",          row=3, col=1)
 
             st.plotly_chart(_fig, use_container_width=True)
+            st.caption(
+                "🟦 Blue background = Trending (ADX > threshold) · "
+                "🟨 Yellow background = Ranging (ADX < threshold) · "
+                "Dotted green = TP level · Dotted orange = Safety Order levels"
+            )
 
         except ImportError:
             st.info("Install plotly for the price chart: `pip install plotly`")
+
+    st.divider()
+
+    # ── Scatter: BTC Return vs Trade P&L ─────────────────────────────────────
+    if not df.empty and len(df) >= 3:
+        st.subheader("🔵 BTC Return vs Trade P&L")
+        try:
+            import plotly.graph_objects as _go2
+
+            # For each trade compute BTC % return during that trade's duration
+            _candle_map = {c["time"]: c["close"] for c in candles}
+            _candle_times = sorted(_candle_map.keys())
+
+            def _nearest_price(ts_dt):
+                ts_ms = int(ts_dt.timestamp() * 1000)
+                _idx  = min(range(len(_candle_times)),
+                            key=lambda k: abs(_candle_times[k] - ts_ms))
+                return _candle_map[_candle_times[_idx]]
+
+            _btc_ret = []
+            for _, _tr in df.iterrows():
+                _p_entry = _nearest_price(_tr["entry_time"])
+                _p_exit  = _nearest_price(_tr["exit_time"])
+                _btc_ret.append((_p_exit - _p_entry) / _p_entry * 100)
+
+            _df_scatter = df.copy()
+            _df_scatter["btc_ret_pct"] = _btc_ret
+            _wins  = _df_scatter[_df_scatter["net_profit_eur"] >= 0]
+            _loses = _df_scatter[_df_scatter["net_profit_eur"] <  0]
+
+            _sfig = _go2.Figure()
+            for _sd, _sc, _sl in [(_wins, "#2ecc71", "Win"), (_loses, "#e74c3c", "Loss")]:
+                _sfig.add_trace(_go2.Scatter(
+                    x=_sd["btc_ret_pct"],
+                    y=_sd["net_profit_eur"],
+                    mode="markers",
+                    name=_sl,
+                    marker=dict(color=_sc, size=8, opacity=0.8),
+                    customdata=_sd[["entry_time", "exit_time", "duration_min"]].values,
+                    hovertemplate=(
+                        f"{_sl}<br>BTC move: %{{x:.2f}}%<br>Net P&L: €%{{y:,.2f}}"
+                        "<br>Entry: %{customdata[0]}"
+                        "<br>Exit:  %{customdata[1]}"
+                        "<br>Dur: %{customdata[2]:.0f} min<extra></extra>"
+                    ),
+                ))
+            _sfig.add_vline(x=0, line_dash="dash", line_color="rgba(255,255,255,0.3)")
+            _sfig.add_hline(y=0, line_dash="dash", line_color="rgba(255,255,255,0.3)")
+            _sfig.update_layout(
+                height=400,
+                template="plotly_dark",
+                xaxis_title="BTC Price Change During Trade (%)",
+                yaxis_title="Trade Net Profit (EUR)",
+                margin=dict(l=0, r=0, t=20, b=0),
+            )
+            st.plotly_chart(_sfig, use_container_width=True)
+            st.caption(
+                "Each dot = one trade. X-axis = how much BTC moved during that trade. "
+                "Dots in top-left = bot profited even when BTC fell. "
+                "Dots spread across X = profit independent of BTC direction."
+            )
+        except ImportError:
+            pass
 
     st.divider()
 
