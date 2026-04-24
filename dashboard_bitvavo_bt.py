@@ -2034,10 +2034,13 @@ if run_opt_btn and date_from < date_to:
         # Composite: product of normalised net profit and Sharpe Ratio × penalty
         norm_net  = net_v / max(initial_balance, 1.0)
         comp_v    = norm_net * sr_v * trade_penalty
-        return {"net": net_v * trade_penalty, "wr": wr_v, "roi": roi_v, "dd": dd_v,
+        # net/wr/roi/sharpe etc are raw (unpenalised) values for display accuracy;
+        # composite already bakes in the penalty; net_opt is used when optimising by net.
+        return {"net": net_v, "wr": wr_v, "roi": roi_v, "dd": dd_v,
                 "ann_roi": ann_v, "sharpe": sr_v,
                 "pf": min(pf_v, 999.0), "calmar": cal_v, "trades": n_tr,
-                "composite": comp_v}
+                "composite": comp_v,
+                "_net_opt": net_v * trade_penalty}
 
     # ── Optuna study ──────────────────────────────────────────────────────────
     import pathlib as _pathlib
@@ -2125,17 +2128,22 @@ if run_opt_btn and date_from < date_to:
             "ATR TP Mult":      round(atr_tp_v, 2) if atr_dynamic else "—",
             "ATR SL Mult":      round(atr_sl_v, 2) if atr_dynamic else "—",
             "ADX Threshold":    round(adx_thr_v, 1) if (regime_filter and regime_mode != "Any") else "—",
-            "Trades":           s["trades"],
-            "Win Rate (%)":     round(s["wr"],     1),
-            "Net Profit (EUR)": round(s["net"],    2),
-            "ROI (%)":          round(s["roi"],    2),
-            "Max DD (%)":       round(s["dd"],     2),
-            "Sharpe":           round(s["sharpe"], 3),
-            "Profit Factor":    round(s["pf"],     3),
-            "Calmar":           round(s["calmar"], 3),
-            "Composite":        round(s["composite"], 6),
-            opt_metric:         round(s[opt_key],  4),
+            "Trades":                        s["trades"],
+            "Win Rate (%)":                  round(s["wr"],        1),
+            "Net Profit (EUR)":              round(s["net"],       2),
+            "ROI (%)":                       round(s["roi"],       2),
+            "Max Drawdown (%)":              round(s["dd"],        2),
+            "Annualised ROI (%)":            round(s["ann_roi"],   2),
+            "Sharpe Ratio":                  round(s["sharpe"],    3),
+            "Profit Factor":                 round(s["pf"],        3),
+            "Calmar Ratio":                  round(s["calmar"],    3),
+            "Composite (Profit × Sharpe)":   round(s["composite"], 6),
         })
+        # Apply trade penalty to net when optimising by net profit so that
+        # trials with very few trades are ranked lower; all other metrics
+        # (composite etc.) already embed the penalty.
+        if opt_key == "net":
+            return s["_net_opt"]
         return s[opt_key]
 
     def _on_trial(study, trial):
@@ -2206,15 +2214,17 @@ if run_opt_btn and date_from < date_to:
                 "ATR TP Mult":      round(_pr.get("atr_tp_mult",  0), 2) if atr_dynamic else "—",
                 "ATR SL Mult":      round(_pr.get("atr_sl_mult",  0), 2) if atr_dynamic else "—",
                 "ADX Threshold":    round(_pr.get("adx_threshold", 0), 1) if (regime_filter and regime_mode != "Any") else "—",
-                "Trades":           "–",
-                "Win Rate (%)":     "–",
-                "Net Profit (EUR)": "–",
-                "ROI (%)":          "–",
-                "Max DD (%)":       "–",
-                "Sharpe":           "–",
-                "Profit Factor":    "–",
-                "Calmar":           "–",
-                opt_metric:         round(_t.value, 4) if _t.value is not None else None,
+                "Trades":                        "–",
+                "Win Rate (%)":                  "–",
+                "Net Profit (EUR)":              "–",
+                "ROI (%)":                       "–",
+                "Max Drawdown (%)":              "–",
+                "Annualised ROI (%)":            "–",
+                "Sharpe Ratio":                  "–",
+                "Profit Factor":                 "–",
+                "Calmar Ratio":                  "–",
+                "Composite (Profit × Sharpe)":   "–",
+                opt_metric:                      round(_t.value, 4) if _t.value is not None else None,
             })
 
     if not trial_rows:
@@ -2308,8 +2318,8 @@ if run_opt_btn and date_from < date_to:
 
     _bt_net = _to_float(best_train['Net Profit (EUR)'])
     _bt_wr  = _to_float(best_train['Win Rate (%)'])
-    _bt_sh  = _to_float(best_train['Sharpe'])
-    _bt_dd  = _to_float(best_train['Max DD (%)'])
+    _bt_sh  = _to_float(best_train['Sharpe Ratio'])
+    _bt_dd  = _to_float(best_train['Max Drawdown (%)'])
 
     wf1.metric("Train — Net Profit", f"€{_bt_net:,.2f}")
     wf2.metric("Val — Net Profit",
