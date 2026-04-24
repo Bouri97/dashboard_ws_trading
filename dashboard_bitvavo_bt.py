@@ -1487,6 +1487,124 @@ if run_button and date_from < date_to:
 
     st.divider()
 
+    # ── BTC Price vs Trade Entries/Exits ─────────────────────────────────────
+    if not df.empty:
+        st.subheader("📈 BTC Price vs Bot Trades")
+        try:
+            import plotly.graph_objects as _go
+            from plotly.subplots import make_subplots as _make_subplots
+
+            # Build price series from candles (sample down to max 2000 points for performance)
+            _step   = max(len(candles) // 2000, 1)
+            _times  = [datetime.fromtimestamp(c["time"] / 1000) for c in candles[::_step]]
+            _prices = [c["close"] for c in candles[::_step]]
+
+            # Cumulative P&L over time (aligned to exit times)
+            _df_sorted  = df.sort_values("exit_time").copy()
+            _df_sorted["cum_pnl"] = _df_sorted["net_profit_eur"].cumsum()
+
+            _fig = _make_subplots(
+                rows=2, cols=1,
+                shared_xaxes=True,
+                row_heights=[0.65, 0.35],
+                vertical_spacing=0.05,
+                subplot_titles=("Price + Trade Signals", "Cumulative P&L (EUR)"),
+            )
+
+            # ── Price line ────────────────────────────────────────────────────
+            _fig.add_trace(_go.Scatter(
+                x=_times, y=_prices,
+                mode="lines",
+                name="BTC Price",
+                line=dict(color="#4a90d9", width=1),
+                hovertemplate="%{x|%Y-%m-%d %H:%M}<br>€%{y:,.2f}<extra></extra>",
+            ), row=1, col=1)
+
+            # ── Entry markers (green triangles up) ───────────────────────────
+            _entries_win  = df[df["net_profit_eur"] >= 0]
+            _entries_loss = df[df["net_profit_eur"] <  0]
+
+            _fig.add_trace(_go.Scatter(
+                x=_entries_win["entry_time"],
+                y=_entries_win["entry_price"],
+                mode="markers",
+                name="Entry (win)",
+                marker=dict(symbol="triangle-up", color="#2ecc71", size=9),
+                hovertemplate="Entry (win)<br>%{x|%Y-%m-%d %H:%M}<br>€%{y:,.4f}<extra></extra>",
+            ), row=1, col=1)
+
+            _fig.add_trace(_go.Scatter(
+                x=_entries_loss["entry_time"],
+                y=_entries_loss["entry_price"],
+                mode="markers",
+                name="Entry (loss)",
+                marker=dict(symbol="triangle-up", color="#e67e22", size=9),
+                hovertemplate="Entry (loss)<br>%{x|%Y-%m-%d %H:%M}<br>€%{y:,.4f}<extra></extra>",
+            ), row=1, col=1)
+
+            # ── Exit markers (red/green triangles down) ───────────────────────
+            _exits_win  = df[df["net_profit_eur"] >= 0]
+            _exits_loss = df[df["net_profit_eur"] <  0]
+
+            _fig.add_trace(_go.Scatter(
+                x=_exits_win["exit_time"],
+                y=_exits_win["exit_price"],
+                mode="markers",
+                name="Exit (profit)",
+                marker=dict(symbol="triangle-down", color="#27ae60", size=9),
+                hovertemplate=(
+                    "Exit ✅<br>%{x|%Y-%m-%d %H:%M}<br>€%{y:,.4f}"
+                    "<br>Net: €%{customdata:,.2f}<extra></extra>"
+                ),
+                customdata=_exits_win["net_profit_eur"],
+            ), row=1, col=1)
+
+            _fig.add_trace(_go.Scatter(
+                x=_exits_loss["exit_time"],
+                y=_exits_loss["exit_price"],
+                mode="markers",
+                name="Exit (loss)",
+                marker=dict(symbol="triangle-down", color="#e74c3c", size=9),
+                hovertemplate=(
+                    "Exit ❌<br>%{x|%Y-%m-%d %H:%M}<br>€%{y:,.4f}"
+                    "<br>Net: €%{customdata:,.2f}<extra></extra>"
+                ),
+                customdata=_exits_loss["net_profit_eur"],
+            ), row=1, col=1)
+
+            # ── Cumulative P&L line ───────────────────────────────────────────
+            _fig.add_trace(_go.Scatter(
+                x=_df_sorted["exit_time"],
+                y=_df_sorted["cum_pnl"],
+                mode="lines",
+                name="Cum. P&L",
+                line=dict(color="#f39c12", width=2),
+                fill="tozeroy",
+                fillcolor="rgba(243,156,18,0.15)",
+                hovertemplate="%{x|%Y-%m-%d %H:%M}<br>€%{y:,.2f}<extra></extra>",
+            ), row=2, col=1)
+
+            # Zero line on P&L chart
+            _fig.add_hline(y=0, line_dash="dash", line_color="rgba(255,255,255,0.3)", row=2, col=1)
+
+            _fig.update_layout(
+                height=600,
+                template="plotly_dark",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+                margin=dict(l=0, r=0, t=40, b=0),
+                hovermode="x unified",
+            )
+            _fig.update_yaxes(title_text="Price (EUR)", row=1, col=1)
+            _fig.update_yaxes(title_text="P&L (EUR)",   row=2, col=1)
+            _fig.update_xaxes(title_text="Date",        row=2, col=1)
+
+            st.plotly_chart(_fig, use_container_width=True)
+
+        except ImportError:
+            st.info("Install plotly for the price chart: `pip install plotly`")
+
+    st.divider()
+
     # ── Equity curve + Buy & Hold ─────────────────────────────────────────────
     st.subheader("📊 Equity Curve vs Buy & Hold")
     if len(equity) > 1 and len(candles) > 1:
