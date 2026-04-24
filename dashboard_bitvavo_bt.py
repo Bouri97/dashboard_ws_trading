@@ -1608,7 +1608,7 @@ if run_opt_btn and date_from < date_to:
 
     def _on_trial(study, trial):
         n = trial.number + 1
-        prog_bar.progress(n / int(opt_trials), text=f"Trial {n}/{int(opt_trials)}…")
+        prog_bar.progress(min(n / int(opt_trials), 1.0), text=f"Trial {n}/{int(opt_trials)}…")
         try:
             bv = study.best_value
             bt = study.best_trial
