@@ -1262,10 +1262,7 @@ if run_button and date_from < date_to:
         pivot["Total"] = pivot.sum(axis=1)
         pivot.index.name = "Year"
         st.dataframe(
-            pivot.style
-                 .format("€{:.2f}", na_rep="—")
-                 .background_gradient(cmap="RdYlGn", axis=None, subset=pivot.columns[:-1])
-                 .background_gradient(cmap="RdYlGn", axis=None, subset=["Total"]),
+            pivot.style.format("€{:.2f}", na_rep="—"),
             use_container_width=True,
         )
 
