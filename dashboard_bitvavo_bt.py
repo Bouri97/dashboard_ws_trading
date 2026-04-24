@@ -1754,28 +1754,33 @@ if run_opt_btn and date_from < date_to:
     val_score  = _score(val_p, best_store["val"], best_store["val_days"]) if best_store["val"] else None
 
     wf1, wf2, wf3, wf4 = st.columns(4)
-    wf1.metric("Train — Net Profit", f"€{best_train['Net Profit (EUR)']:,.2f}")
+    _bt_net = float(best_train['Net Profit (EUR)'])
+    _bt_wr  = float(best_train['Win Rate (%)'])
+    _bt_sh  = float(best_train['Sharpe'])
+    _bt_dd  = float(best_train['Max DD (%)'])
+
+    wf1.metric("Train — Net Profit", f"€{_bt_net:,.2f}")
     wf2.metric("Val — Net Profit",
                f"€{val_score['net']:,.2f}" if val_score else "N/A",
-               delta=f"{val_score['net'] - best_train['Net Profit (EUR)']:+.2f}" if val_score else None)
-    wf3.metric("Train — Win Rate",   f"{best_train['Win Rate (%)']:.1f}%")
+               delta=f"{val_score['net'] - _bt_net:+.2f}" if val_score else None)
+    wf3.metric("Train — Win Rate",   f"{_bt_wr:.1f}%")
     wf4.metric("Val — Win Rate",
                f"{val_score['wr']:.1f}%" if val_score else "N/A",
-               delta=f"{val_score['wr'] - best_train['Win Rate (%)']:+.1f}%" if val_score else None)
+               delta=f"{val_score['wr'] - _bt_wr:+.1f}%" if val_score else None)
 
     wf5, wf6, wf7, wf8 = st.columns(4)
-    wf5.metric("Train — Sharpe",  f"{best_train['Sharpe']:.3f}")
+    wf5.metric("Train — Sharpe",  f"{_bt_sh:.3f}")
     wf6.metric("Val — Sharpe",
                f"{val_score['sharpe']:.3f}" if val_score else "N/A",
-               delta=f"{val_score['sharpe'] - best_train['Sharpe']:+.3f}" if val_score else None)
-    wf7.metric("Train — Max DD",  f"{best_train['Max DD (%)']:.2f}%")
+               delta=f"{val_score['sharpe'] - _bt_sh:+.3f}" if val_score else None)
+    wf7.metric("Train — Max DD",  f"{_bt_dd:.2f}%")
     wf8.metric("Val — Max DD",
                f"{val_score['dd']:.2f}%" if val_score else "N/A",
-               delta=f"{val_score['dd'] - best_train['Max DD (%)']:+.2f}%" if val_score else None,
+               delta=f"{val_score['dd'] - _bt_dd:+.2f}%" if val_score else None,
                delta_color="inverse")
 
     if val_score:
-        if val_score["net"] < 0 and best_train["Net Profit (EUR)"] > 0:
+        if val_score["net"] < 0 and _bt_net > 0:
             st.warning(
                 "⚠️ Profitable on training data but loses on validation — possible overfitting. "
                 "Try more trials, a longer date range, or fewer filters."
