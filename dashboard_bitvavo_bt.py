@@ -1305,9 +1305,13 @@ def max_drawdown(equity: list) -> float:
 
 
 def sharpe_ratio(roi_series: pd.Series, trades_per_year: float) -> float:
-    if len(roi_series) < 2 or roi_series.std() == 0:
+    if len(roi_series) < 2:
         return 0.0
-    return (roi_series.mean() / roi_series.std()) * (trades_per_year ** 0.5)
+    std = roi_series.std()
+    if std < 1e-8:   # catches both exactly-zero and near-zero (float precision)
+        return 0.0
+    raw = (roi_series.mean() / std) * (trades_per_year ** 0.5)
+    return max(-100.0, min(100.0, raw))   # clamp to ±100 — anything beyond is noise
 
 
 def profit_factor(net_series: pd.Series) -> float:
@@ -2020,6 +2024,8 @@ if run_opt_btn and date_from < date_to:
         if df_r.empty or len(eq) < 2:
             return None
         net_v = df_r["net_profit_eur"].sum()
+        # Guard against compounding explosions — cap at 10 000× the initial balance
+        net_v = min(net_v, initial_balance * 10_000)
         wr_v  = (df_r["net_profit_eur"] > 0).mean() * 100
         roi_v = (eq[-1] - initial_balance) / initial_balance * 100
         dd_v  = max_drawdown(eq)
@@ -2292,7 +2298,6 @@ if run_opt_btn and date_from < date_to:
         f"Training: first {opt_wf_split}% (~{best_store['train_days']:.0f} days) · "
         f"Validation: remaining {100 - opt_wf_split}% (~{best_store['val_days']:.0f} days)"
     )
-    best_train   = df_trials.iloc[0]
     best_bos_rec  = bp.get("bos_recency",    bos_recency)
     best_sr_lb    = bp.get("sr_lookback",    sr_lookback)
     best_sr_prox  = bp.get("sr_proximity",   sr_proximity_pct)
@@ -2302,24 +2307,20 @@ if run_opt_btn and date_from < date_to:
     best_atr_tp   = bp.get("atr_tp_mult",    atr_tp_mult)
     best_atr_sl   = bp.get("atr_sl_mult",    atr_sl_mult)
     best_adx_thr  = bp.get("adx_threshold",  adx_threshold)
-    val_p         = _build_params(best_tp, best_dev, best_so, best_vs, best_step,
+    best_p        = _build_params(best_tp, best_dev, best_so, best_vs, best_step,
                                   best_rsi, best_base, best_so_sz, best_store["itvl_min"],
                                   bos_rec=best_bos_rec, sr_lb=best_sr_lb, sr_prox=best_sr_prox,
                                   sl_pct=best_sl_pct, ma_fast=best_ma_fast, ma_slow=best_ma_slow,
                                   atr_tp=best_atr_tp, atr_sl=best_atr_sl, adx_thr=best_adx_thr)
-    val_score  = _score(val_p, best_store["val"], best_store["val_days"]) if best_store["val"] else None
+    # Always recompute train & val scores from the backtester — never read from the
+    # trials table, which may have "–" placeholders for DB-loaded prior trials.
+    train_score = _score(best_p, best_store["train"], best_store["train_days"])
+    val_score   = _score(best_p, best_store["val"],   best_store["val_days"]) if best_store["val"] else None
 
-    wf1, wf2, wf3, wf4 = st.columns(4)
-    def _to_float(v):
-        try:
-            return float(v)
-        except (ValueError, TypeError):
-            return 0.0
-
-    _bt_net = _to_float(best_train['Net Profit (EUR)'])
-    _bt_wr  = _to_float(best_train['Win Rate (%)'])
-    _bt_sh  = _to_float(best_train['Sharpe Ratio'])
-    _bt_dd  = _to_float(best_train['Max Drawdown (%)'])
+    _bt_net = train_score["net"]    if train_score else 0.0
+    _bt_wr  = train_score["wr"]     if train_score else 0.0
+    _bt_sh  = train_score["sharpe"] if train_score else 0.0
+    _bt_dd  = train_score["dd"]     if train_score else 0.0
 
     wf1.metric("Train — Net Profit", f"€{_bt_net:,.2f}")
     wf2.metric("Val — Net Profit",
