@@ -189,6 +189,51 @@ macd_mode    = st.sidebar.selectbox(
     ),
 )
 
+candle_pattern_filter = st.sidebar.checkbox(
+    "Candlestick Pattern Filter", value=False, key="candle_pattern_filter",
+    help="Only open a trade when one of the selected candlestick patterns is detected",
+)
+candle_patterns = st.sidebar.multiselect(
+    "Patterns",
+    ["Hammer", "Bullish Engulfing", "Doji", "Morning Star"],
+    default=["Hammer", "Bullish Engulfing"],
+    key="candle_patterns",
+    disabled=not candle_pattern_filter,
+    help=(
+        "Hammer: small body at top, long lower wick ≥2× body\n"
+        "Bullish Engulfing: current green body fully engulfs previous body\n"
+        "Doji: body < 10% of total candle range\n"
+        "Morning Star: 3-candle reversal pattern (bearish, small body, bullish)"
+    ),
+)
+
+regime_filter = st.sidebar.checkbox(
+    "Market Regime Filter", value=False, key="regime_filter",
+    help="Filter entries based on ADX-detected market regime (trending vs ranging)",
+)
+regime_mode = st.sidebar.selectbox(
+    "Regime Mode",
+    ["Trending (ADX > threshold)", "Ranging (ADX < threshold)", "Any"],
+    key="regime_mode",
+    disabled=not regime_filter,
+    help=(
+        "Trending: ADX above threshold — enter only in trending markets\n"
+        "Ranging: ADX below threshold — enter only in sideways markets\n"
+        "Any: no regime filter applied"
+    ),
+)
+adx_period    = st.sidebar.number_input(
+    "ADX Period", value=14, min_value=2, step=1, key="adx_period",
+    disabled=not regime_filter,
+    help="Period for the ADX (Average Directional Index) calculation",
+)
+adx_threshold = st.sidebar.number_input(
+    "ADX Threshold", value=25.0, min_value=1.0, max_value=99.0, step=1.0,
+    key="adx_threshold",
+    disabled=not regime_filter,
+    help="ADX values above this indicate a trending market; below indicate ranging",
+)
+
 bos_filter   = st.sidebar.checkbox("Break of Structure (BOS) Filter", value=False, key="bos_filter",
                                     help="Only enter after a confirmed bullish break of structure (price closes above a prior swing high)")
 bos_lookback = st.sidebar.number_input("BOS Swing Lookback", value=10, min_value=2, step=1, key="bos_lookback",
@@ -317,6 +362,8 @@ _PRESET_KEYS = [
     "sr_filter", "sr_lookback", "sr_proximity_pct",
     "ma_cross_filter", "ma_cross_type", "ma_fast_period", "ma_slow_period", "ma_cross_mode",
     "atr_dynamic", "atr_period", "atr_tp_mult", "atr_sl_mult",
+    "candle_pattern_filter", "candle_patterns",
+    "regime_filter", "regime_mode", "adx_period", "adx_threshold",
     "trailing_tp", "trail_pct",
     "stop_loss_enabled", "stop_loss_pct",
     "time_stop_enabled", "time_stop_hours",
@@ -423,8 +470,13 @@ with st.sidebar.expander("🤖 Auto-Optimizer", expanded=False):
 
     opt_metric = st.selectbox(
         "Optimize for",
-        ["Net Profit (EUR)", "Win Rate (%)", "Sharpe Ratio", "Profit Factor", "Calmar Ratio"],
+        ["Net Profit (EUR)", "Win Rate (%)", "Sharpe Ratio", "Profit Factor", "Calmar Ratio",
+         "Composite (Profit × Sharpe)"],
         key="opt_metric",
+        help=(
+            "Composite (Profit × Sharpe): optimises net_profit × sharpe_ratio (both normalised) "
+            "to prevent overfitting to a single metric."
+        ),
     )
     opt_trials = st.number_input(
         "Number of Trials", value=75, min_value=10, max_value=500, step=25,
@@ -645,6 +697,107 @@ def compute_atr(
     return tr.ewm(alpha=1 / period, min_periods=period).mean()
 
 
+def compute_adx(
+    highs: pd.Series, lows: pd.Series, closes: pd.Series, period: int = 14
+) -> pd.Series:
+    """Standard ADX using Wilder smoothing.
+
+    Returns the ADX line as a pd.Series aligned to the input index.
+    Values are NaN for the first (2 × period) rows while the smoothing
+    warms up (same behaviour as TradingView's built-in ADX).
+    """
+    # True Range
+    prev_close = closes.shift(1)
+    tr = pd.concat([
+        highs - lows,
+        (highs - prev_close).abs(),
+        (lows  - prev_close).abs(),
+    ], axis=1).max(axis=1)
+
+    # Directional movement
+    up_move   = highs - highs.shift(1)
+    down_move = lows.shift(1) - lows
+    plus_dm  = up_move.where((up_move > down_move) & (up_move > 0), 0.0)
+    minus_dm = down_move.where((down_move > up_move) & (down_move > 0), 0.0)
+
+    # Wilder smoothing
+    alpha     = 1.0 / period
+    atr_s     = tr.ewm(alpha=alpha, min_periods=period).mean()
+    plus_di   = 100 * plus_dm.ewm(alpha=alpha,  min_periods=period).mean() / atr_s.replace(0, 1e-10)
+    minus_di  = 100 * minus_dm.ewm(alpha=alpha, min_periods=period).mean() / atr_s.replace(0, 1e-10)
+
+    dx_denom  = (plus_di + minus_di).replace(0, 1e-10)
+    dx        = (100 * (plus_di - minus_di).abs() / dx_denom)
+    adx       = dx.ewm(alpha=alpha, min_periods=period).mean()
+    return adx
+
+
+def compute_candlestick_patterns(
+    opens: pd.Series,
+    highs: pd.Series,
+    lows: pd.Series,
+    closes: pd.Series,
+    patterns: list,
+) -> pd.Series:
+    """Pre-compute a boolean Series — True when at least one of the requested
+    candlestick patterns is detected on that candle.
+
+    Supported patterns: Hammer, Bullish Engulfing, Doji, Morning Star.
+    All calculations are fully vectorised (no Python loop per candle).
+    """
+    n      = len(closes)
+    result = pd.Series(False, index=closes.index)
+
+    body   = (closes - opens).abs()
+    candle_range = highs - lows
+    # Avoid division by zero for doji / flat candles
+    safe_range = candle_range.replace(0, 1e-10)
+    safe_body  = body.replace(0, 1e-10)
+
+    upper_wick = highs  - closes.where(closes >= opens, opens)
+    lower_wick = closes.where(closes >= opens, opens) - lows
+
+    if "Hammer" in patterns:
+        # Conditions: long lower wick ≥ 2× body, upper wick ≤ body
+        hammer = (lower_wick >= 2 * safe_body) & (upper_wick <= body)
+        result = result | hammer
+
+    if "Bullish Engulfing" in patterns:
+        prev_open  = opens.shift(1)
+        prev_close = closes.shift(1)
+        # Current candle is green AND its body fully engulfs previous body
+        curr_green  = closes > opens
+        eng_high    = closes > prev_open.where(prev_open > prev_close, prev_close)
+        eng_low     = opens  < prev_close.where(prev_close < prev_open, prev_open)
+        bull_eng    = curr_green & eng_high & eng_low
+        result      = result | bull_eng
+
+    if "Doji" in patterns:
+        doji   = body < 0.10 * safe_range
+        result = result | doji
+
+    if "Morning Star" in patterns:
+        # Candle i-2: bearish (close < open)
+        # Candle i-1: small body (< 30% of i-2 range)
+        # Candle i  : bullish, closes above midpoint of i-2
+        prev2_open  = opens.shift(2)
+        prev2_close = closes.shift(2)
+        prev2_range = (highs.shift(2) - lows.shift(2)).replace(0, 1e-10)
+        prev1_body  = (closes.shift(1) - opens.shift(1)).abs()
+
+        first_bear    = prev2_close < prev2_open
+        second_small  = prev1_body < 0.30 * prev2_range
+        third_bull    = closes > opens
+        midpoint      = (prev2_open + prev2_close) / 2
+        third_above   = closes > midpoint
+
+        morning_star  = first_bear & second_small & third_bull & third_above
+        result        = result | morning_star
+
+    # First 2 candles can never satisfy multi-candle patterns — leave as False
+    return result
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # ENGINE
 # ─────────────────────────────────────────────────────────────────────────────
@@ -697,6 +850,14 @@ class DCASpotBacktester:
         self.atr_period       = params["atr_period"]
         self.atr_tp_mult      = params["atr_tp_mult"]
         self.atr_sl_mult      = params["atr_sl_mult"]
+        # Candlestick pattern filter
+        self.candle_pattern_filter = params["candle_pattern_filter"]
+        self.candle_patterns       = params["candle_patterns"]
+        # Market regime filter
+        self.regime_filter    = params["regime_filter"]
+        self.regime_mode      = params["regime_mode"]
+        self.adx_period       = params["adx_period"]
+        self.adx_threshold    = params["adx_threshold"]
         # Leverage & timeframe
         self.leverage        = params["leverage"]
         self.candle_min      = params["candle_min"]
@@ -778,6 +939,21 @@ class DCASpotBacktester:
 
         atr_vals = compute_atr(highs, lows, closes, self.atr_period).tolist() if self.atr_dynamic else [0.0] * len(closes)
 
+        # Candlestick pattern filter — pre-compute boolean signal
+        opens = pd.Series([c["open"] for c in candles])
+        if self.candle_pattern_filter and self.candle_patterns:
+            candle_sig_vals = compute_candlestick_patterns(
+                opens, highs, lows, closes, self.candle_patterns
+            ).tolist()
+        else:
+            candle_sig_vals = [True] * len(closes)   # sentinel: always passes
+
+        # Market regime filter — pre-compute ADX
+        if self.regime_filter and self.regime_mode != "Any":
+            adx_vals = compute_adx(highs, lows, closes, self.adx_period).tolist()
+        else:
+            adx_vals = [0.0] * len(closes)   # sentinel
+
         trades, equity_curve, micro_trades = [], [self.balance], []
         i = 0
         trade_number = 1
@@ -855,8 +1031,23 @@ class DCASpotBacktester:
             else:
                 ma_cross_ok = True
 
+            # Candlestick pattern filter
+            candle_ok = not self.candle_pattern_filter or bool(candle_sig_vals[i])
+
+            # Market regime filter (ADX-based)
+            if self.regime_filter and self.regime_mode != "Any":
+                adx_v = adx_vals[i]
+                if adx_v != adx_v:  # NaN — not enough history yet
+                    regime_ok = False
+                elif self.regime_mode == "Trending (ADX > threshold)":
+                    regime_ok = adx_v > self.adx_threshold
+                else:  # Ranging (ADX < threshold)
+                    regime_ok = adx_v < self.adx_threshold
+            else:
+                regime_ok = True
+
             if not (rsi_ok and sma_ok and ema_ok and vol_ok and bb_ok and macd_ok
-                    and bos_ok and sr_ok and ma_cross_ok):
+                    and bos_ok and sr_ok and ma_cross_ok and candle_ok and regime_ok):
                 i += 1
                 continue
 
@@ -1136,6 +1327,12 @@ if run_button and date_from < date_to:
         "atr_period":        int(atr_period),
         "atr_tp_mult":       atr_tp_mult,
         "atr_sl_mult":       atr_sl_mult,
+        "candle_pattern_filter": candle_pattern_filter,
+        "candle_patterns":       list(candle_patterns),
+        "regime_filter":     regime_filter,
+        "regime_mode":       regime_mode,
+        "adx_period":        int(adx_period),
+        "adx_threshold":     adx_threshold,
         "trailing_tp":       trailing_tp,
         "trail_pct":         trail_pct,
         "stop_loss_enabled": stop_loss_enabled,
@@ -1426,14 +1623,19 @@ if run_opt_btn and date_from < date_to:
 
     # ── Helpers ───────────────────────────────────────────────────────────────
     METRIC_KEY = {
-        "Net Profit (EUR)": "net",  "Win Rate (%)": "wr",
-        "Sharpe Ratio":     "sharpe", "Profit Factor": "pf", "Calmar Ratio": "calmar",
+        "Net Profit (EUR)":          "net",
+        "Win Rate (%)":              "wr",
+        "Sharpe Ratio":              "sharpe",
+        "Profit Factor":             "pf",
+        "Calmar Ratio":              "calmar",
+        "Composite (Profit × Sharpe)": "composite",
     }
     opt_key  = METRIC_KEY[opt_metric]
 
     def _build_params(tp, dev, so, vs, step_mul, rsi_thr, base_o, so_size, itvl_m,
                       bos_rec=None, sr_lb=None, sr_prox=None, ma_fast=None, ma_slow=None,
-                      atr_tp=None, atr_sl=None, sl_pct=None):
+                      atr_tp=None, atr_sl=None, sl_pct=None,
+                      adx_thr=None):
         return {
             "initial_balance":   initial_balance,
             "base_order":        base_o,
@@ -1479,6 +1681,12 @@ if run_opt_btn and date_from < date_to:
             "atr_period":        int(atr_period),
             "atr_tp_mult":       float(atr_tp) if atr_tp is not None else atr_tp_mult,
             "atr_sl_mult":       float(atr_sl) if atr_sl is not None else atr_sl_mult,
+            "candle_pattern_filter": candle_pattern_filter,
+            "candle_patterns":       list(candle_patterns),
+            "regime_filter":     regime_filter,
+            "regime_mode":       regime_mode,
+            "adx_period":        int(adx_period),
+            "adx_threshold":     float(adx_thr) if adx_thr is not None else adx_threshold,
             "trailing_tp":       trailing_tp,
             "trail_pct":         trail_pct,
             "stop_loss_enabled": stop_loss_enabled,
@@ -1504,9 +1712,14 @@ if run_opt_btn and date_from < date_to:
         sr_v  = sharpe_ratio(df_r["roi_pct"], n_tr / max(days / 365, 0.01))
         pf_v  = profit_factor(df_r["net_profit_eur"])
         cal_v = ann_v / dd_v if dd_v > 0 else 0.0
+        # Composite: product of normalised net profit and Sharpe Ratio.
+        # Normalise net by initial_balance so both factors are dimensionless.
+        norm_net  = net_v / max(initial_balance, 1.0)
+        comp_v    = norm_net * sr_v
         return {"net": net_v, "wr": wr_v, "roi": roi_v, "dd": dd_v,
                 "ann_roi": ann_v, "sharpe": sr_v,
-                "pf": min(pf_v, 999.0), "calmar": cal_v, "trades": n_tr}
+                "pf": min(pf_v, 999.0), "calmar": cal_v, "trades": n_tr,
+                "composite": comp_v}
 
     # ── Optuna study ──────────────────────────────────────────────────────────
     import pathlib as _pathlib
@@ -1561,11 +1774,13 @@ if run_opt_btn and date_from < date_to:
                     if atr_dynamic else atr_tp_mult)
         atr_sl_v = (trial.suggest_float("atr_sl_mult",    0.5, 3.0)
                     if atr_dynamic else atr_sl_mult)
+        adx_thr_v = (trial.suggest_float("adx_threshold", 10.0, 50.0)
+                     if regime_filter and regime_mode != "Any" else adx_threshold)
 
         p = _build_params(tp, dev, so, vs, step_m, rsi_thr, base_o, so_size, store["itvl_min"],
                           bos_rec=bos_rec, sr_lb=sr_lb_v, sr_prox=sr_prox, sl_pct=sl_pct_v,
                           ma_fast=ma_fast, ma_slow=ma_slow,
-                          atr_tp=atr_tp_v, atr_sl=atr_sl_v)
+                          atr_tp=atr_tp_v, atr_sl=atr_sl_v, adx_thr=adx_thr_v)
         s = _score(p, store["train"], store["train_days"])
         if s is None:
             return float("-inf")
@@ -1591,6 +1806,7 @@ if run_opt_btn and date_from < date_to:
             "MA Slow":          ma_slow if ma_cross_filter else "—",
             "ATR TP Mult":      round(atr_tp_v, 2) if atr_dynamic else "—",
             "ATR SL Mult":      round(atr_sl_v, 2) if atr_dynamic else "—",
+            "ADX Threshold":    round(adx_thr_v, 1) if (regime_filter and regime_mode != "Any") else "—",
             "Trades":           s["trades"],
             "Win Rate (%)":     round(s["wr"],     1),
             "Net Profit (EUR)": round(s["net"],    2),
@@ -1599,6 +1815,7 @@ if run_opt_btn and date_from < date_to:
             "Sharpe":           round(s["sharpe"], 3),
             "Profit Factor":    round(s["pf"],     3),
             "Calmar":           round(s["calmar"], 3),
+            "Composite":        round(s["composite"], 6),
             opt_metric:         round(s[opt_key],  4),
         })
         return s[opt_key]
@@ -1737,19 +1954,20 @@ if run_opt_btn and date_from < date_to:
         f"Validation: remaining {100 - opt_wf_split}% (~{best_store['val_days']:.0f} days)"
     )
     best_train   = df_trials.iloc[0]
-    best_bos_rec = bp.get("bos_recency",    bos_recency)
-    best_sr_lb   = bp.get("sr_lookback",    sr_lookback)
-    best_sr_prox = bp.get("sr_proximity",   sr_proximity_pct)
-    best_sl_pct  = bp.get("sl_pct",         stop_loss_pct)
-    best_ma_fast = bp.get("ma_fast_period", ma_fast_period)
-    best_ma_slow = bp.get("ma_slow_period", ma_slow_period)
-    best_atr_tp  = bp.get("atr_tp_mult",    atr_tp_mult)
-    best_atr_sl  = bp.get("atr_sl_mult",    atr_sl_mult)
-    val_p        = _build_params(best_tp, best_dev, best_so, best_vs, best_step,
-                                 best_rsi, best_base, best_so_sz, best_store["itvl_min"],
-                                 bos_rec=best_bos_rec, sr_lb=best_sr_lb, sr_prox=best_sr_prox,
-                                 sl_pct=best_sl_pct, ma_fast=best_ma_fast, ma_slow=best_ma_slow,
-                                 atr_tp=best_atr_tp, atr_sl=best_atr_sl)
+    best_bos_rec  = bp.get("bos_recency",    bos_recency)
+    best_sr_lb    = bp.get("sr_lookback",    sr_lookback)
+    best_sr_prox  = bp.get("sr_proximity",   sr_proximity_pct)
+    best_sl_pct   = bp.get("sl_pct",         stop_loss_pct)
+    best_ma_fast  = bp.get("ma_fast_period", ma_fast_period)
+    best_ma_slow  = bp.get("ma_slow_period", ma_slow_period)
+    best_atr_tp   = bp.get("atr_tp_mult",    atr_tp_mult)
+    best_atr_sl   = bp.get("atr_sl_mult",    atr_sl_mult)
+    best_adx_thr  = bp.get("adx_threshold",  adx_threshold)
+    val_p         = _build_params(best_tp, best_dev, best_so, best_vs, best_step,
+                                  best_rsi, best_base, best_so_sz, best_store["itvl_min"],
+                                  bos_rec=best_bos_rec, sr_lb=best_sr_lb, sr_prox=best_sr_prox,
+                                  sl_pct=best_sl_pct, ma_fast=best_ma_fast, ma_slow=best_ma_slow,
+                                  atr_tp=best_atr_tp, atr_sl=best_atr_sl, adx_thr=best_adx_thr)
     val_score  = _score(val_p, best_store["val"], best_store["val_days"]) if best_store["val"] else None
 
     wf1, wf2, wf3, wf4 = st.columns(4)
@@ -1815,6 +2033,7 @@ if run_opt_btn and date_from < date_to:
             "sr_proximity": "SR Proximity %", "sl_pct": "SL %",
             "ma_fast_period": "MA Fast", "ma_slow_period": "MA Slow",
             "atr_tp_mult": "ATR TP Mult", "atr_sl_mult": "ATR SL Mult",
+            "adx_threshold": "ADX Threshold",
         }
         imp_df = pd.DataFrame({
             "Parameter":  [_labels.get(k, k) for k in importance],
