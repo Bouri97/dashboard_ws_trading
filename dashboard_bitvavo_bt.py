@@ -1838,12 +1838,7 @@ if run_opt_btn and date_from < date_to:
 
     # ── All trials table ──────────────────────────────────────────────────────
     st.subheader("🏅 All Trials (ranked)")
-    _fmt = {"Net Profit (EUR)": "€{:.2f}", "Win Rate (%)": "{:.1f}%",
-            "ROI (%)": "{:.2f}%", "Max DD (%)": "{:.2f}%"}
-    st.dataframe(
-        df_trials.style.format(_fmt),
-        use_container_width=True,
-    )
+    st.dataframe(df_trials, use_container_width=True)
     _dl_cols, _ = st.columns([1, 3])
     _dl_cols.download_button(
         "⬇️ Download results CSV",
