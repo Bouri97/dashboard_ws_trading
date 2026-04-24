@@ -116,7 +116,7 @@ if order_mode == "Percentage":
         "Base Order (%)", value=5.6, min_value=0.1, step=0.1, key="base_order_value",
         help="Keep small — capital must cover all safety orders too")
     safety_order_value = st.sidebar.number_input(
-        "Safety Order (%)", value=6.3, min_value=0.1, step=0.1, key="safety_order_value")
+        "Safety Order (%)", value=5.9, min_value=0.1, step=0.1, key="safety_order_value")
 else:
     base_order_value   = st.sidebar.number_input("Base Order (EUR)",   value=50.0, min_value=1.0, step=10.0, key="base_order_value")
     safety_order_value = st.sidebar.number_input("Safety Order (EUR)", value=50.0, min_value=1.0, step=10.0, key="safety_order_value")
@@ -128,10 +128,10 @@ deviation_pct     = st.sidebar.number_input(
     help="Each SO opens this % further below the previous SO")
 step_multiplier   = st.sidebar.number_input("Step Multiplier", value=0.9, min_value=0.1, step=0.1, key="step_multiplier")
 volume_scale      = st.sidebar.number_input(
-    "Volume Scale", value=1.05, min_value=1.0, step=0.01, key="volume_scale",
+    "Volume Scale", value=1.10, min_value=1.0, step=0.01, key="volume_scale",
     help="Spot: keep 1.0–1.10. Higher values exhaust balance fast without leverage.")
 take_profit_pct   = st.sidebar.number_input(
-    "Take Profit (%)", value=10.0, min_value=0.01, step=0.1, key="take_profit_pct",
+    "Take Profit (%)", value=1.46, min_value=0.01, step=0.1, key="take_profit_pct",
     help="Minimum 0.5% to cover round-trip fees (0.25% buy + 0.25% sell)")
 max_safety_orders = st.sidebar.slider("Max Safety Orders", 1, 20, 10, key="max_safety_orders")
 
