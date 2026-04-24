@@ -1676,8 +1676,10 @@ if run_opt_btn and date_from < date_to:
         st.stop()
 
     # ── Results dataframe ─────────────────────────────────────────────────────
+    df_trials = pd.DataFrame(trial_rows)
+    df_trials[opt_metric] = pd.to_numeric(df_trials[opt_metric], errors="coerce")
     df_trials = (
-        pd.DataFrame(trial_rows)
+        df_trials
         .sort_values(opt_metric, ascending=False)
         .reset_index(drop=True)
     )
@@ -1751,10 +1753,16 @@ if run_opt_btn and date_from < date_to:
     val_score  = _score(val_p, best_store["val"], best_store["val_days"]) if best_store["val"] else None
 
     wf1, wf2, wf3, wf4 = st.columns(4)
-    _bt_net = float(best_train['Net Profit (EUR)'])
-    _bt_wr  = float(best_train['Win Rate (%)'])
-    _bt_sh  = float(best_train['Sharpe'])
-    _bt_dd  = float(best_train['Max DD (%)'])
+    def _to_float(v):
+        try:
+            return float(v)
+        except (ValueError, TypeError):
+            return 0.0
+
+    _bt_net = _to_float(best_train['Net Profit (EUR)'])
+    _bt_wr  = _to_float(best_train['Win Rate (%)'])
+    _bt_sh  = _to_float(best_train['Sharpe'])
+    _bt_dd  = _to_float(best_train['Max DD (%)'])
 
     wf1.metric("Train — Net Profit", f"€{_bt_net:,.2f}")
     wf2.metric("Val — Net Profit",
