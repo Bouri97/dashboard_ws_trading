@@ -2322,6 +2322,7 @@ if run_opt_btn and date_from < date_to:
     _bt_sh  = train_score["sharpe"] if train_score else 0.0
     _bt_dd  = train_score["dd"]     if train_score else 0.0
 
+    wf1, wf2, wf3, wf4 = st.columns(4)
     wf1.metric("Train — Net Profit", f"€{_bt_net:,.2f}")
     wf2.metric("Val — Net Profit",
                f"€{val_score['net']:,.2f}" if val_score else "N/A",
