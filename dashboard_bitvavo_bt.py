@@ -547,6 +547,30 @@ with st.sidebar.expander("🤖 Auto-Optimizer", expanded=False):
         key="opt_wf_split",
     )
 
+    st.markdown("**Advanced Learning Settings**")
+    opt_rolling_wf = st.checkbox(
+        "Rolling Walk-Forward (N windows)", value=False, key="opt_rolling_wf",
+        help="Split data into N rolling windows and score by consistency across all windows, not just peak performance.",
+    )
+    opt_rolling_windows = st.number_input(
+        "Number of windows", value=5, min_value=3, max_value=10, step=1,
+        key="opt_rolling_windows", disabled=not opt_rolling_wf,
+        help="How many time windows to roll over. Each window is (total_candles / N) in size.",
+    )
+    opt_regime_library = st.checkbox(
+        "Regime-based Parameter Library", value=False, key="opt_regime_library",
+        help="Run separate optimization per market regime (Bull/Bear/Sideways). Best params per regime are stored and displayed.",
+    )
+    opt_stability_test = st.checkbox(
+        "Stability Testing", value=False, key="opt_stability_test",
+        help="After finding the best params, re-test on multiple random sub-periods to measure robustness.",
+    )
+    opt_stability_runs = st.number_input(
+        "Stability runs", value=8, min_value=3, max_value=20, step=1,
+        key="opt_stability_runs", disabled=not opt_stability_test,
+        help="Number of random sub-periods to test the best params on.",
+    )
+
     st.markdown("**Assets & Timeframes**")
     opt_pairs = st.multiselect(
         "Trading Pairs", ["BTC-EUR", "ETH-EUR", "XRP-EUR", "SOL-EUR"],
@@ -2248,6 +2272,102 @@ if run_opt_btn and date_from < date_to:
                 "composite": comp_v,
                 "_net_opt": net_v * trade_penalty}
 
+    # ── Rolling Walk-Forward scorer ───────────────────────────────────────────
+    def _rolling_wf_score(p, candles: list, n_windows: int) -> dict | None:
+        """Score params across N rolling windows. Returns mean metrics and consistency."""
+        if len(candles) < n_windows * 20:
+            return None
+        win_size = len(candles) // n_windows
+        scores = []
+        for w in range(n_windows):
+            start = w * win_size
+            end   = start + win_size
+            chunk = candles[start:end]
+            days  = win_size * p["candle_min"] / 1440
+            s = _score(p, chunk, days)
+            if s is not None:
+                scores.append(s)
+        if not scores:
+            return None
+        nets    = [s["net"]    for s in scores]
+        sharpes = [s["sharpe"] for s in scores]
+        wrs     = [s["wr"]     for s in scores]
+        # Consistency: fraction of windows that were profitable
+        consistency = sum(1 for n in nets if n > 0) / len(nets)
+        mean_net    = sum(nets) / len(nets)
+        mean_sharpe = sum(sharpes) / len(sharpes)
+        mean_wr     = sum(wrs) / len(wrs)
+        # Rolling composite: mean_net × mean_sharpe × consistency
+        norm_net    = mean_net / max(initial_balance, 1.0)
+        rolling_composite = norm_net * mean_sharpe * consistency
+        return {
+            "net": mean_net, "wr": mean_wr, "sharpe": mean_sharpe,
+            "consistency": consistency, "n_windows": len(scores),
+            "window_nets": nets, "composite": rolling_composite,
+            "dd": sum(s["dd"] for s in scores) / len(scores),
+            "roi": sum(s["roi"] for s in scores) / len(scores),
+            "pf": sum(s["pf"] for s in scores) / len(scores),
+            "calmar": sum(s["calmar"] for s in scores) / len(scores),
+            "ann_roi": sum(s["ann_roi"] for s in scores) / len(scores),
+            "trades": sum(s["trades"] for s in scores),
+            "_net_opt": mean_net * consistency,
+        }
+
+    # ── Regime detection ──────────────────────────────────────────────────────
+    def _detect_regime(candles: list) -> str:
+        """Classify a candle window as Bull / Bear / Sideways using EMA slope + price range."""
+        if len(candles) < 20:
+            return "Unknown"
+        closes = pd.Series([c["close"] for c in candles])
+        ema    = closes.ewm(span=20, adjust=False).mean()
+        slope  = (ema.iloc[-1] - ema.iloc[0]) / ema.iloc[0] * 100
+        rng    = (closes.max() - closes.min()) / closes.mean() * 100
+        if slope > 3:
+            return "Bull"
+        elif slope < -3:
+            return "Bear"
+        else:
+            return "Sideways"
+
+    # ── Stability tester ──────────────────────────────────────────────────────
+    def _stability_test(p: dict, candles: list, n_runs: int) -> dict:
+        """Re-test params on n_runs random sub-periods (each 30–60% of full data)."""
+        import random as _random
+        _random.seed(99)
+        n = len(candles)
+        results = []
+        for _ in range(n_runs):
+            win_frac = _random.uniform(0.30, 0.60)
+            win_size = max(int(n * win_frac), 50)
+            max_start = n - win_size
+            if max_start <= 0:
+                continue
+            start = _random.randint(0, max_start)
+            chunk = candles[start: start + win_size]
+            days  = win_size * p["candle_min"] / 1440
+            s = _score(p, chunk, days)
+            if s is not None:
+                results.append(s)
+        if not results:
+            return {}
+        nets = [r["net"] for r in results]
+        sharpes = [r["sharpe"] for r in results]
+        n_pos = sum(1 for x in nets if x > 0)
+        mean_net = sum(nets) / len(nets)
+        std_net  = pd.Series(nets).std()
+        worst    = min(nets)
+        best     = max(nets)
+        return {
+            "runs": len(results),
+            "profitable_pct": n_pos / len(results) * 100,
+            "mean_net": mean_net,
+            "std_net":  std_net,
+            "worst_net": worst,
+            "best_net":  best,
+            "mean_sharpe": sum(sharpes) / len(sharpes),
+            "nets": nets,
+        }
+
     # ── Optuna study ──────────────────────────────────────────────────────────
     import pathlib as _pathlib
     _study_name = opt_study_name.strip() or "dca_study"
@@ -2325,7 +2445,10 @@ if run_opt_btn and date_from < date_to:
                           ma_fast=ma_fast, ma_slow=ma_slow,
                           atr_tp=atr_tp_v, atr_sl=atr_sl_v, adx_thr=adx_thr_v,
                           vp_lb=vp_lb_v, vp_prox=vp_prox_v)
-        s = _score(p, store["train"], store["train_days"])
+        if opt_rolling_wf:
+            s = _rolling_wf_score(p, store["train"], int(opt_rolling_windows))
+        else:
+            s = _score(p, store["train"], store["train_days"])
         if s is None:
             return float("-inf")
 
@@ -2514,11 +2637,6 @@ if run_opt_btn and date_from < date_to:
 
     # ── Walk-forward validation ───────────────────────────────────────────────
     st.subheader("🔀 Walk-Forward Validation")
-    st.caption(
-        f"Best combo: **{best_pair} {best_iv}** · "
-        f"Training: first {opt_wf_split}% (~{best_store['train_days']:.0f} days) · "
-        f"Validation: remaining {100 - opt_wf_split}% (~{best_store['val_days']:.0f} days)"
-    )
     best_bos_rec  = bp.get("bos_recency",    bos_recency)
     best_sr_lb    = bp.get("sr_lookback",    sr_lookback)
     best_sr_prox  = bp.get("sr_proximity",   sr_proximity_pct)
@@ -2536,45 +2654,152 @@ if run_opt_btn and date_from < date_to:
                                   sl_pct=best_sl_pct, ma_fast=best_ma_fast, ma_slow=best_ma_slow,
                                   atr_tp=best_atr_tp, atr_sl=best_atr_sl, adx_thr=best_adx_thr,
                                   vp_lb=best_vp_lb, vp_prox=best_vp_prox)
-    # Always recompute train & val scores from the backtester — never read from the
-    # trials table, which may have "–" placeholders for DB-loaded prior trials.
-    train_score = _score(best_p, best_store["train"], best_store["train_days"])
-    val_score   = _score(best_p, best_store["val"],   best_store["val_days"]) if best_store["val"] else None
+    if opt_rolling_wf:
+        st.caption(
+            f"Best combo: **{best_pair} {best_iv}** · "
+            f"Rolling Walk-Forward: **{int(opt_rolling_windows)} windows** over full training data"
+        )
+        rwf = _rolling_wf_score(best_p, best_store["train"] + (best_store["val"] or []), int(opt_rolling_windows))
+        if rwf:
+            wf1, wf2, wf3, wf4 = st.columns(4)
+            wf1.metric("Mean Net Profit",    f"€{rwf['net']:,.2f}")
+            wf2.metric("Consistency",        f"{rwf['consistency']*100:.0f}% profitable windows")
+            wf3.metric("Mean Win Rate",      f"{rwf['wr']:.1f}%")
+            wf4.metric("Mean Sharpe",        f"{rwf['sharpe']:.3f}")
+            # Per-window bar chart
+            _wdf = pd.DataFrame({"Window": [f"W{i+1}" for i in range(len(rwf['window_nets']))],
+                                  "Net Profit (EUR)": rwf["window_nets"]})
+            import plotly.graph_objects as _pgo
+            _wfig = _pgo.Figure(_pgo.Bar(
+                x=_wdf["Window"], y=_wdf["Net Profit (EUR)"],
+                marker_color=["green" if v > 0 else "red" for v in rwf["window_nets"]],
+            ))
+            _wfig.update_layout(title="Net Profit per Rolling Window",
+                                xaxis_title="Window", yaxis_title="Net Profit (EUR)",
+                                height=300, margin=dict(t=40, b=20))
+            st.plotly_chart(_wfig, use_container_width=True)
+            n_pos = sum(1 for v in rwf["window_nets"] if v > 0)
+            if rwf["consistency"] >= 0.7:
+                st.success(f"✅ Profitable in {n_pos}/{len(rwf['window_nets'])} windows — robust strategy.")
+            elif rwf["consistency"] >= 0.5:
+                st.warning(f"⚠️ Profitable in {n_pos}/{len(rwf['window_nets'])} windows — moderate robustness.")
+            else:
+                st.error(f"❌ Profitable in only {n_pos}/{len(rwf['window_nets'])} windows — likely overfitting.")
+    else:
+        st.caption(
+            f"Best combo: **{best_pair} {best_iv}** · "
+            f"Training: first {opt_wf_split}% (~{best_store['train_days']:.0f} days) · "
+            f"Validation: remaining {100 - opt_wf_split}% (~{best_store['val_days']:.0f} days)"
+        )
+        train_score = _score(best_p, best_store["train"], best_store["train_days"])
+        val_score   = _score(best_p, best_store["val"],   best_store["val_days"]) if best_store["val"] else None
 
-    _bt_net = train_score["net"]    if train_score else 0.0
-    _bt_wr  = train_score["wr"]     if train_score else 0.0
-    _bt_sh  = train_score["sharpe"] if train_score else 0.0
-    _bt_dd  = train_score["dd"]     if train_score else 0.0
+        _bt_net = train_score["net"]    if train_score else 0.0
+        _bt_wr  = train_score["wr"]     if train_score else 0.0
+        _bt_sh  = train_score["sharpe"] if train_score else 0.0
+        _bt_dd  = train_score["dd"]     if train_score else 0.0
 
-    wf1, wf2, wf3, wf4 = st.columns(4)
-    wf1.metric("Train — Net Profit", f"€{_bt_net:,.2f}")
-    wf2.metric("Val — Net Profit",
-               f"€{val_score['net']:,.2f}" if val_score else "N/A",
-               delta=f"{val_score['net'] - _bt_net:+.2f}" if val_score else None)
-    wf3.metric("Train — Win Rate",   f"{_bt_wr:.1f}%")
-    wf4.metric("Val — Win Rate",
-               f"{val_score['wr']:.1f}%" if val_score else "N/A",
-               delta=f"{val_score['wr'] - _bt_wr:+.1f}%" if val_score else None)
+        wf1, wf2, wf3, wf4 = st.columns(4)
+        wf1.metric("Train — Net Profit", f"€{_bt_net:,.2f}")
+        wf2.metric("Val — Net Profit",
+                   f"€{val_score['net']:,.2f}" if val_score else "N/A",
+                   delta=f"{val_score['net'] - _bt_net:+.2f}" if val_score else None)
+        wf3.metric("Train — Win Rate",   f"{_bt_wr:.1f}%")
+        wf4.metric("Val — Win Rate",
+                   f"{val_score['wr']:.1f}%" if val_score else "N/A",
+                   delta=f"{val_score['wr'] - _bt_wr:+.1f}%" if val_score else None)
 
-    wf5, wf6, wf7, wf8 = st.columns(4)
-    wf5.metric("Train — Sharpe",  f"{_bt_sh:.3f}")
-    wf6.metric("Val — Sharpe",
-               f"{val_score['sharpe']:.3f}" if val_score else "N/A",
-               delta=f"{val_score['sharpe'] - _bt_sh:+.3f}" if val_score else None)
-    wf7.metric("Train — Max DD",  f"{_bt_dd:.2f}%")
-    wf8.metric("Val — Max DD",
-               f"{val_score['dd']:.2f}%" if val_score else "N/A",
-               delta=f"{val_score['dd'] - _bt_dd:+.2f}%" if val_score else None,
-               delta_color="inverse")
+        wf5, wf6, wf7, wf8 = st.columns(4)
+        wf5.metric("Train — Sharpe",  f"{_bt_sh:.3f}")
+        wf6.metric("Val — Sharpe",
+                   f"{val_score['sharpe']:.3f}" if val_score else "N/A",
+                   delta=f"{val_score['sharpe'] - _bt_sh:+.3f}" if val_score else None)
+        wf7.metric("Train — Max DD",  f"{_bt_dd:.2f}%")
+        wf8.metric("Val — Max DD",
+                   f"{val_score['dd']:.2f}%" if val_score else "N/A",
+                   delta=f"{val_score['dd'] - _bt_dd:+.2f}%" if val_score else None,
+                   delta_color="inverse")
 
-    if val_score:
-        if val_score["net"] < 0 and _bt_net > 0:
-            st.warning(
-                "⚠️ Profitable on training data but loses on validation — possible overfitting. "
-                "Try more trials, a longer date range, or fewer filters."
+        if val_score:
+            if val_score["net"] < 0 and _bt_net > 0:
+                st.warning(
+                    "⚠️ Profitable on training data but loses on validation — possible overfitting. "
+                    "Try more trials, a longer date range, or fewer filters."
+                )
+            elif val_score["net"] > 0:
+                st.success("✅ Strategy remains profitable on unseen validation data.")
+
+    # ── Regime-based Parameter Library ───────────────────────────────────────
+    if opt_regime_library:
+        st.subheader("🌍 Regime-Based Parameter Library")
+        st.caption("Best params tested separately on Bull, Bear and Sideways market windows.")
+        all_candles = best_store["train"] + (best_store["val"] or [])
+        _reg_results = {}
+        for _regime_name in ["Bull", "Bear", "Sideways"]:
+            # Filter candles into 20-candle chunks matching this regime
+            _chunk_size = max(len(all_candles) // 10, 50)
+            _regime_chunks = []
+            for _ci in range(0, len(all_candles) - _chunk_size, _chunk_size // 2):
+                _chunk = all_candles[_ci: _ci + _chunk_size]
+                if _detect_regime(_chunk) == _regime_name:
+                    _regime_chunks.extend(_chunk)
+            if len(_regime_chunks) < 50:
+                continue
+            _days = len(_regime_chunks) * best_store["itvl_min"] / 1440
+            _rs   = _score(best_p, _regime_chunks, _days)
+            if _rs:
+                _reg_results[_regime_name] = _rs
+
+        if _reg_results:
+            _rcols = st.columns(len(_reg_results))
+            for _ci2, (_rname, _rs2) in enumerate(_reg_results.items()):
+                _emoji = {"Bull": "🟢", "Bear": "🔴", "Sideways": "🟡"}.get(_rname, "⚪")
+                _rcols[_ci2].metric(f"{_emoji} {_rname} — Net Profit", f"€{_rs2['net']:,.2f}")
+                _rcols[_ci2].metric(f"{_emoji} {_rname} — Win Rate",   f"{_rs2['wr']:.1f}%")
+                _rcols[_ci2].metric(f"{_emoji} {_rname} — Sharpe",     f"{_rs2['sharpe']:.3f}")
+            st.caption(
+                "💡 If Bear regime shows losses, consider enabling the Trend Direction Filter "
+                "or Market Regime Filter to skip entries in downtrends."
             )
-        elif val_score["net"] > 0:
-            st.success("✅ Strategy remains profitable on unseen validation data.")
+        else:
+            st.info("Not enough data to classify regime windows. Try a longer date range.")
+
+    # ── Stability Testing ─────────────────────────────────────────────────────
+    if opt_stability_test:
+        st.subheader("🧪 Stability Test")
+        st.caption(
+            f"Best params re-tested on **{int(opt_stability_runs)} random sub-periods** "
+            f"(each 30–60% of full data) to measure real-world robustness."
+        )
+        all_candles_st = best_store["train"] + (best_store["val"] or [])
+        with st.spinner("Running stability tests…"):
+            _stab = _stability_test(best_p, all_candles_st, int(opt_stability_runs))
+
+        if _stab:
+            st1, st2, st3, st4 = st.columns(4)
+            st1.metric("Profitable runs",  f"{_stab['profitable_pct']:.0f}%")
+            st2.metric("Mean Net Profit",  f"€{_stab['mean_net']:,.2f}")
+            st3.metric("Worst run",        f"€{_stab['worst_net']:,.2f}")
+            st4.metric("Best run",         f"€{_stab['best_net']:,.2f}")
+
+            # Bar chart of all runs
+            import plotly.graph_objects as _pgo2
+            _sfig = _pgo2.Figure(_pgo2.Bar(
+                x=[f"Run {i+1}" for i in range(len(_stab["nets"]))],
+                y=_stab["nets"],
+                marker_color=["green" if v > 0 else "red" for v in _stab["nets"]],
+            ))
+            _sfig.update_layout(title="Net Profit per Stability Run",
+                                xaxis_title="Run", yaxis_title="Net Profit (EUR)",
+                                height=300, margin=dict(t=40, b=20))
+            st.plotly_chart(_sfig, use_container_width=True)
+
+            if _stab["profitable_pct"] >= 75:
+                st.success(f"✅ Profitable in {_stab['profitable_pct']:.0f}% of random periods — highly stable.")
+            elif _stab["profitable_pct"] >= 50:
+                st.warning(f"⚠️ Profitable in {_stab['profitable_pct']:.0f}% of random periods — moderately stable.")
+            else:
+                st.error(f"❌ Only profitable in {_stab['profitable_pct']:.0f}% of random periods — strategy is fragile.")
 
     # ── Optimization history ──────────────────────────────────────────────────
     st.subheader("📈 Optimization History")
