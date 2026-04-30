@@ -559,49 +559,95 @@ with st.sidebar.expander("🤖 Auto-Optimizer", expanded=False):
         help="Each (pair × timeframe) combination is pre-downloaded once then reused.",
     )
 
-    st.markdown("**Order Sizing ranges** *(min → max)*")
-    _sz_unit = "%" if order_mode == "Percentage" else "EUR"
+    # ── Which variables to sweep ──────────────────────────────────────────────
+    st.markdown("**Variables to sweep**")
+    st.caption("Uncheck to keep a variable fixed at the sidebar value.")
     _c1, _c2 = st.columns(2)
+    opt_sweep_sizing = _c1.checkbox(f"Order Sizing",        value=True, key="opt_sweep_sizing")
+    opt_sweep_tp     = _c2.checkbox("Take Profit %",        value=True, key="opt_sweep_tp")
+    opt_sweep_dev    = _c1.checkbox("Deviation %",          value=True, key="opt_sweep_dev")
+    opt_sweep_so     = _c2.checkbox("Max Safety Orders",    value=True, key="opt_sweep_so")
+    opt_sweep_vs     = _c1.checkbox("Volume Scale",         value=True, key="opt_sweep_vs")
+    opt_sweep_step   = _c2.checkbox("Step Multiplier",      value=True, key="opt_sweep_step")
+    opt_sweep_rsi    = (_c1.checkbox("RSI Threshold",       value=True, key="opt_sweep_rsi")
+                        if rsi_filter else False)
+    opt_sweep_sl     = (_c2.checkbox("Stop Loss %",         value=True, key="opt_sweep_sl")
+                        if stop_loss_enabled else False)
+    opt_sweep_bos    = (_c1.checkbox("BOS Recency",         value=True, key="opt_sweep_bos")
+                        if bos_filter else False)
+    opt_sweep_sr     = (_c2.checkbox("S&R Lookback/Prox",  value=True, key="opt_sweep_sr")
+                        if sr_filter else False)
+    opt_sweep_ma     = (_c1.checkbox("MA Fast/Slow",        value=True, key="opt_sweep_ma")
+                        if ma_cross_filter else False)
+    opt_sweep_atr    = (_c2.checkbox("ATR TP/SL Mult",      value=True, key="opt_sweep_atr")
+                        if atr_dynamic else False)
+    opt_sweep_adx    = (_c1.checkbox("ADX Threshold",       value=True, key="opt_sweep_adx")
+                        if (regime_filter and regime_mode != "Any") else False)
+    opt_sweep_vp     = (_c2.checkbox("VP Lookback/Prox",    value=True, key="opt_sweep_vp")
+                        if vp_filter else False)
+
+    # ── Ranges (only shown when sweeping) ────────────────────────────────────
+    _sz_unit = "%" if order_mode == "Percentage" else "EUR"
     _def_base = base_order_value
     _def_so   = safety_order_value
-    opt_base_min = _c1.number_input(f"Base {_sz_unit} min", value=max(_def_base * 0.5, 0.1),
-                                     min_value=0.1, step=0.5 if order_mode == "Percentage" else 5.0,
-                                     key="opt_base_min", format="%.1f")
-    opt_base_max = _c2.number_input(f"Base {_sz_unit} max", value=_def_base * 2.0,
-                                     min_value=0.2, step=0.5 if order_mode == "Percentage" else 5.0,
-                                     key="opt_base_max", format="%.1f")
-    opt_so_size_min = _c1.number_input(f"Safety {_sz_unit} min", value=max(_def_so * 0.5, 0.1),
-                                        min_value=0.1, step=0.5 if order_mode == "Percentage" else 5.0,
-                                        key="opt_so_size_min", format="%.1f")
-    opt_so_size_max = _c2.number_input(f"Safety {_sz_unit} max", value=_def_so * 2.0,
-                                        min_value=0.2, step=0.5 if order_mode == "Percentage" else 5.0,
-                                        key="opt_so_size_max", format="%.1f")
+    if opt_sweep_sizing:
+        st.markdown(f"**Order Sizing ranges** *(min → max)*")
+        opt_base_min = _c1.number_input(f"Base {_sz_unit} min", value=max(_def_base * 0.5, 0.1),
+                                         min_value=0.1, step=0.5 if order_mode == "Percentage" else 5.0,
+                                         key="opt_base_min", format="%.1f")
+        opt_base_max = _c2.number_input(f"Base {_sz_unit} max", value=_def_base * 2.0,
+                                         min_value=0.2, step=0.5 if order_mode == "Percentage" else 5.0,
+                                         key="opt_base_max", format="%.1f")
+        opt_so_size_min = _c1.number_input(f"Safety {_sz_unit} min", value=max(_def_so * 0.5, 0.1),
+                                            min_value=0.1, step=0.5 if order_mode == "Percentage" else 5.0,
+                                            key="opt_so_size_min", format="%.1f")
+        opt_so_size_max = _c2.number_input(f"Safety {_sz_unit} max", value=_def_so * 2.0,
+                                            min_value=0.2, step=0.5 if order_mode == "Percentage" else 5.0,
+                                            key="opt_so_size_max", format="%.1f")
+    else:
+        opt_base_min = opt_base_max = _def_base
+        opt_so_size_min = opt_so_size_max = _def_so
 
     st.markdown("**DCA parameter ranges** *(min → max)*")
-    opt_tp_min   = _c1.number_input("TP % min",      value=0.3,  min_value=0.1, step=0.1,  key="opt_tp_min",   format="%.1f")
-    opt_tp_max   = _c2.number_input("TP % max",      value=5.0,  min_value=0.2, step=0.5,  key="opt_tp_max",   format="%.1f")
-    opt_dev_min  = _c1.number_input("Dev % min",     value=0.3,  min_value=0.1, step=0.1,  key="opt_dev_min",  format="%.1f")
-    opt_dev_max  = _c2.number_input("Dev % max",     value=3.0,  min_value=0.2, step=0.5,  key="opt_dev_max",  format="%.1f")
-    opt_so_min   = _c1.number_input("SOs min",       value=2,    min_value=1,   step=1,    key="opt_so_min")
-    opt_so_max   = _c2.number_input("SOs max",       value=10,   min_value=2,   step=1,    key="opt_so_max")
-    opt_vs_min   = _c1.number_input("VolScale min",  value=1.0,  min_value=1.0, step=0.05, key="opt_vs_min",   format="%.2f")
-    opt_vs_max   = _c2.number_input("VolScale max",  value=1.3,  min_value=1.0, step=0.05, key="opt_vs_max",   format="%.2f")
-    opt_step_min = _c1.number_input("StepMul min",   value=0.8,  min_value=0.1, step=0.1,  key="opt_step_min", format="%.1f")
-    opt_step_max = _c2.number_input("StepMul max",   value=2.0,  min_value=0.2, step=0.1,  key="opt_step_max", format="%.1f")
-    if rsi_filter:
-        opt_rsi_min = _c1.number_input("RSI Thr min", value=30.0, min_value=1.0,  max_value=98.0, step=5.0, key="opt_rsi_min")
-        opt_rsi_max = _c2.number_input("RSI Thr max", value=75.0, min_value=2.0,  max_value=99.0, step=5.0, key="opt_rsi_max")
+    if opt_sweep_tp:
+        opt_tp_min = _c1.number_input("TP % min", value=0.3, min_value=0.1, step=0.1, key="opt_tp_min", format="%.1f")
+        opt_tp_max = _c2.number_input("TP % max", value=5.0, min_value=0.2, step=0.5, key="opt_tp_max", format="%.1f")
+    else:
+        opt_tp_min = opt_tp_max = take_profit_pct
+    if opt_sweep_dev:
+        opt_dev_min = _c1.number_input("Dev % min", value=0.3, min_value=0.1, step=0.1, key="opt_dev_min", format="%.1f")
+        opt_dev_max = _c2.number_input("Dev % max", value=3.0, min_value=0.2, step=0.5, key="opt_dev_max", format="%.1f")
+    else:
+        opt_dev_min = opt_dev_max = deviation_pct
+    if opt_sweep_so:
+        opt_so_min = _c1.number_input("SOs min", value=2, min_value=1, step=1, key="opt_so_min")
+        opt_so_max = _c2.number_input("SOs max", value=10, min_value=2, step=1, key="opt_so_max")
+    else:
+        opt_so_min = opt_so_max = max_safety_orders
+    if opt_sweep_vs:
+        opt_vs_min = _c1.number_input("VolScale min", value=1.0, min_value=1.0, step=0.05, key="opt_vs_min", format="%.2f")
+        opt_vs_max = _c2.number_input("VolScale max", value=1.3, min_value=1.0, step=0.05, key="opt_vs_max", format="%.2f")
+    else:
+        opt_vs_min = opt_vs_max = volume_scale
+    if opt_sweep_step:
+        opt_step_min = _c1.number_input("StepMul min", value=0.8, min_value=0.1, step=0.1, key="opt_step_min", format="%.1f")
+        opt_step_max = _c2.number_input("StepMul max", value=2.0, min_value=0.2, step=0.1, key="opt_step_max", format="%.1f")
+    else:
+        opt_step_min = opt_step_max = step_multiplier
+    if rsi_filter and opt_sweep_rsi:
+        opt_rsi_min = _c1.number_input("RSI Thr min", value=30.0, min_value=1.0, max_value=98.0, step=5.0, key="opt_rsi_min")
+        opt_rsi_max = _c2.number_input("RSI Thr max", value=75.0, min_value=2.0, max_value=99.0, step=5.0, key="opt_rsi_max")
     else:
         opt_rsi_min = opt_rsi_max = rsi_threshold
 
-    if stop_loss_enabled:
+    if stop_loss_enabled and opt_sweep_sl:
         st.markdown("**Stop Loss range** *(min → max)*")
         opt_sl_min = _c1.number_input("SL % min", value=2.0, min_value=0.1, step=0.5, key="opt_sl_min", format="%.1f")
         opt_sl_max = _c2.number_input("SL % max", value=15.0, min_value=0.5, step=0.5, key="opt_sl_max", format="%.1f")
     else:
         opt_sl_min = opt_sl_max = stop_loss_pct
 
-    if sr_filter:
+    if sr_filter and opt_sweep_sr:
         st.markdown("**S&R Filter ranges** *(min → max)*")
         opt_sr_lb_min   = _c1.number_input("S&R Lookback min", value=20,  min_value=5,  step=5,   key="opt_sr_lb_min")
         opt_sr_lb_max   = _c2.number_input("S&R Lookback max", value=100, min_value=10, step=10,  key="opt_sr_lb_max")
@@ -611,7 +657,7 @@ with st.sidebar.expander("🤖 Auto-Optimizer", expanded=False):
         opt_sr_lb_min = opt_sr_lb_max = sr_lookback
         opt_sr_prox_min = opt_sr_prox_max = sr_proximity_pct
 
-    if vp_filter:
+    if vp_filter and opt_sweep_vp:
         st.markdown("**Volume Profile ranges** *(min → max)*")
         opt_vp_lb_min   = _c1.number_input("VP Lookback min",   value=20,  min_value=10, step=10,  key="opt_vp_lb_min")
         opt_vp_lb_max   = _c2.number_input("VP Lookback max",   value=200, min_value=20, step=10,  key="opt_vp_lb_max")
@@ -2218,54 +2264,61 @@ if run_opt_btn and date_from < date_to:
         sel_pair, sel_iv = pair_t.split("|", 1)
         store  = candle_store[(sel_pair, sel_iv)]
 
-        # Order sizing
+        # Order sizing — sweep only if opt_sweep_sizing is enabled
         _base_lo = max(float(opt_base_min),    0.1)
         _base_hi = max(float(opt_base_max),    _base_lo + 0.1)
         _so_lo   = max(float(opt_so_size_min), 0.1)
         _so_hi   = max(float(opt_so_size_max), _so_lo   + 0.1)
-        base_o   = trial.suggest_float("base_order",   _base_lo, _base_hi)
-        so_size  = trial.suggest_float("safety_order", _so_lo,   _so_hi)
+        base_o   = (trial.suggest_float("base_order",   _base_lo, _base_hi)
+                    if opt_sweep_sizing else base_order_value)
+        so_size  = (trial.suggest_float("safety_order", _so_lo,   _so_hi)
+                    if opt_sweep_sizing else safety_order_value)
 
-        # DCA parameters
-        tp      = trial.suggest_float("tp_pct",    max(opt_tp_min,   0.1), max(opt_tp_max,   opt_tp_min   + 0.1))
-        dev     = trial.suggest_float("dev_pct",   max(opt_dev_min,  0.1), max(opt_dev_max,  opt_dev_min  + 0.1))
-        so      = trial.suggest_int(  "max_so",    int(opt_so_min),        max(int(opt_so_max), int(opt_so_min) + 1))
-        vs      = trial.suggest_float("vol_scale", max(opt_vs_min,   1.0), max(opt_vs_max,   opt_vs_min   + 0.01))
-        step_m  = trial.suggest_float("step_mul",  max(opt_step_min, 0.1), max(opt_step_max, opt_step_min + 0.1))
-        rsi_thr = (trial.suggest_float("rsi_thr",  opt_rsi_min, max(opt_rsi_max, opt_rsi_min + 1.0))
-                   if rsi_filter else rsi_threshold)
+        # DCA parameters — each independently gated by its sweep flag
+        tp      = (trial.suggest_float("tp_pct",    max(opt_tp_min,   0.1), max(opt_tp_max,   opt_tp_min   + 0.1))
+                   if opt_sweep_tp   else take_profit_pct)
+        dev     = (trial.suggest_float("dev_pct",   max(opt_dev_min,  0.1), max(opt_dev_max,  opt_dev_min  + 0.1))
+                   if opt_sweep_dev  else deviation_pct)
+        so      = (trial.suggest_int(  "max_so",    int(opt_so_min),        max(int(opt_so_max), int(opt_so_min) + 1))
+                   if opt_sweep_so   else max_safety_orders)
+        vs      = (trial.suggest_float("vol_scale", max(opt_vs_min,   1.0), max(opt_vs_max,   opt_vs_min   + 0.01))
+                   if opt_sweep_vs   else volume_scale)
+        step_m  = (trial.suggest_float("step_mul",  max(opt_step_min, 0.1), max(opt_step_max, opt_step_min + 0.1))
+                   if opt_sweep_step else step_multiplier)
+        rsi_thr = (trial.suggest_float("rsi_thr",   opt_rsi_min, max(opt_rsi_max, opt_rsi_min + 1.0))
+                   if (rsi_filter and opt_sweep_rsi) else rsi_threshold)
 
-        # Sweep new advanced TA params if the corresponding filter is enabled
-        bos_rec  = (trial.suggest_int(  "bos_recency",    1, 15)
-                    if bos_filter else bos_recency)
-        sr_lb_v  = (trial.suggest_int(  "sr_lookback",    max(int(opt_sr_lb_min), 5),
-                                                           max(int(opt_sr_lb_max), int(opt_sr_lb_min) + 5))
-                    if sr_filter else sr_lookback)
-        sr_prox  = (trial.suggest_float("sr_proximity",   max(opt_sr_prox_min, 0.1),
-                                                           max(opt_sr_prox_max, opt_sr_prox_min + 0.1))
-                    if sr_filter else sr_proximity_pct)
-        sl_pct_v = (trial.suggest_float("sl_pct",         max(opt_sl_min, 0.1),
-                                                           max(opt_sl_max, opt_sl_min + 0.1))
-                    if stop_loss_enabled else stop_loss_pct)
+        # Advanced TA params — each gated by filter enabled AND sweep flag
+        bos_rec  = (trial.suggest_int(  "bos_recency",  1, 15)
+                    if (bos_filter and opt_sweep_bos) else bos_recency)
+        sr_lb_v  = (trial.suggest_int(  "sr_lookback",  max(int(opt_sr_lb_min), 5),
+                                                         max(int(opt_sr_lb_max), int(opt_sr_lb_min) + 5))
+                    if (sr_filter and opt_sweep_sr) else sr_lookback)
+        sr_prox  = (trial.suggest_float("sr_proximity", max(opt_sr_prox_min, 0.1),
+                                                         max(opt_sr_prox_max, opt_sr_prox_min + 0.1))
+                    if (sr_filter and opt_sweep_sr) else sr_proximity_pct)
+        sl_pct_v = (trial.suggest_float("sl_pct",       max(opt_sl_min, 0.1),
+                                                         max(opt_sl_max, opt_sl_min + 0.1))
+                    if (stop_loss_enabled and opt_sweep_sl) else stop_loss_pct)
         ma_fast  = (trial.suggest_int(  "ma_fast_period", 5,  100)
-                    if ma_cross_filter else ma_fast_period)
+                    if (ma_cross_filter and opt_sweep_ma) else ma_fast_period)
         ma_slow  = (trial.suggest_int(  "ma_slow_period", max(int(ma_fast) + 10, 50), 300)
-                    if ma_cross_filter else ma_slow_period)
-        atr_tp_v = (trial.suggest_float("atr_tp_mult",    1.0, 5.0)
-                    if atr_dynamic else atr_tp_mult)
-        atr_sl_v = (trial.suggest_float("atr_sl_mult",    0.5, 3.0)
-                    if atr_dynamic else atr_sl_mult)
+                    if (ma_cross_filter and opt_sweep_ma) else ma_slow_period)
+        atr_tp_v = (trial.suggest_float("atr_tp_mult",  1.0, 5.0)
+                    if (atr_dynamic and opt_sweep_atr) else atr_tp_mult)
+        atr_sl_v = (trial.suggest_float("atr_sl_mult",  0.5, 3.0)
+                    if (atr_dynamic and opt_sweep_atr) else atr_sl_mult)
         adx_thr_v = (trial.suggest_float("adx_threshold", 10.0, 50.0)
-                     if regime_filter and regime_mode != "Any" else adx_threshold)
+                     if (regime_filter and regime_mode != "Any" and opt_sweep_adx) else adx_threshold)
 
         vp_lb_v   = (trial.suggest_int(  "vp_lookback",
                                           max(int(opt_vp_lb_min), 10),
                                           max(int(opt_vp_lb_max), int(opt_vp_lb_min) + 10))
-                     if vp_filter else vp_lookback)
+                     if (vp_filter and opt_sweep_vp) else vp_lookback)
         vp_prox_v = (trial.suggest_float("vp_proximity_pct",
                                           max(opt_vp_prox_min, 0.1),
                                           max(opt_vp_prox_max, opt_vp_prox_min + 0.1))
-                     if vp_filter and vp_mode != "Inside Value Area" else vp_proximity_pct)
+                     if (vp_filter and opt_sweep_vp and vp_mode != "Inside Value Area") else vp_proximity_pct)
 
         p = _build_params(tp, dev, so, vs, step_m, rsi_thr, base_o, so_size, store["itvl_min"],
                           bos_rec=bos_rec, sr_lb=sr_lb_v, sr_prox=sr_prox, sl_pct=sl_pct_v,
