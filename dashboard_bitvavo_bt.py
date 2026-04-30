@@ -305,6 +305,34 @@ atr_sl_mult  = st.sidebar.number_input("ATR SL Multiplier", value=1.5, min_value
                                         disabled=not atr_dynamic,
                                         help="SL = avg_entry − N × ATR (only active when Stop Loss is also enabled)")
 
+vp_filter    = st.sidebar.checkbox(
+    "Volume Profile Filter", value=False, key="vp_filter",
+    help="Only enter when price is near a Volume Profile level (POC or Value Area Low)",
+)
+vp_lookback  = st.sidebar.number_input(
+    "VP Lookback (candles)", value=50, min_value=10, step=10, key="vp_lookback",
+    disabled=not vp_filter,
+    help="Number of past candles used to compute the rolling Volume Profile",
+)
+vp_mode      = st.sidebar.selectbox(
+    "VP Entry Mode",
+    ["Near POC", "Near VAL", "Near POC or VAL", "Inside Value Area"],
+    key="vp_mode",
+    disabled=not vp_filter,
+    help=(
+        "Near POC: price within proximity% of the Point of Control\n"
+        "Near VAL: price within proximity% of the Value Area Low\n"
+        "Near POC or VAL: either of the above\n"
+        "Inside Value Area: price is between VAL and VAH"
+    ),
+)
+vp_proximity_pct = st.sidebar.number_input(
+    "VP Proximity (%)", value=1.0, min_value=0.1, max_value=20.0, step=0.1,
+    key="vp_proximity_pct",
+    disabled=not (vp_filter and vp_mode != "Inside Value Area"),
+    help="Enter only when price is within this % of the selected VP level",
+)
+
 # ── Exit options ──────────────────────────────────────────────────────────────
 st.sidebar.markdown("**Exit Options**")
 trailing_tp   = st.sidebar.checkbox("Trailing Take Profit", value=False, key="trailing_tp",
@@ -382,6 +410,7 @@ _PRESET_KEYS = [
     "sr_filter", "sr_lookback", "sr_proximity_pct",
     "ma_cross_filter", "ma_cross_type", "ma_fast_period", "ma_slow_period", "ma_cross_mode",
     "atr_dynamic", "atr_period", "atr_tp_mult", "atr_sl_mult",
+    "vp_filter", "vp_lookback", "vp_mode", "vp_proximity_pct",
     "candle_pattern_filter", "candle_patterns", "candle_vol_confirm", "candle_confirm_candle",
     "regime_filter", "regime_mode", "adx_period", "adx_threshold",
     "trend_direction_filter", "trend_ema_period",
@@ -827,6 +856,76 @@ def compute_candlestick_patterns(
     return result
 
 
+def compute_volume_profile(
+    closes: pd.Series, volumes: pd.Series, lookback: int
+) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """Rolling Volume Profile: POC, VAH, VAL over a sliding `lookback` window.
+
+    POC  = price level (close) with the highest cumulative volume in the window.
+    VAH  = highest price in the window whose cumulative volume (from POC upward)
+           reaches 70% of total window volume.
+    VAL  = lowest price in the window whose cumulative volume (from POC downward)
+           reaches 70% of total window volume.
+
+    Returns three pd.Series (poc, vah, val) aligned to the input index.
+    Values are NaN for the first `lookback - 1` rows.
+    """
+    n   = len(closes)
+    poc = pd.Series(float("nan"), index=closes.index)
+    vah = pd.Series(float("nan"), index=closes.index)
+    val = pd.Series(float("nan"), index=closes.index)
+
+    closes_arr  = closes.values
+    volumes_arr = volumes.values
+
+    for i in range(lookback - 1, n):
+        w_closes  = closes_arr[i - lookback + 1 : i + 1]
+        w_volumes = volumes_arr[i - lookback + 1 : i + 1]
+        if w_volumes.sum() == 0:
+            continue
+
+        # POC: index with max volume
+        poc_idx = int(w_volumes.argmax())
+        poc_price = w_closes[poc_idx]
+        poc.iloc[i] = poc_price
+
+        # Value Area: accumulate 70% of volume around POC
+        total_vol  = w_volumes.sum()
+        target_vol = total_vol * 0.70
+
+        # sort by price
+        order      = w_closes.argsort()
+        sorted_p   = w_closes[order]
+        sorted_v   = w_volumes[order]
+
+        # find poc index in sorted arrays
+        poc_sorted = int((sorted_p == poc_price).argmax())
+
+        cum = sorted_v[poc_sorted]
+        lo_idx = hi_idx = poc_sorted
+        while cum < target_vol:
+            expand_hi = hi_idx + 1 < len(sorted_p)
+            expand_lo = lo_idx - 1 >= 0
+            if not expand_hi and not expand_lo:
+                break
+            hi_vol = sorted_v[hi_idx + 1] if expand_hi else 0
+            lo_vol = sorted_v[lo_idx - 1] if expand_lo else 0
+            if hi_vol >= lo_vol and expand_hi:
+                hi_idx += 1
+                cum += sorted_v[hi_idx]
+            elif expand_lo:
+                lo_idx -= 1
+                cum += sorted_v[lo_idx]
+            else:
+                hi_idx += 1
+                cum += sorted_v[hi_idx]
+
+        vah.iloc[i] = sorted_p[hi_idx]
+        val.iloc[i] = sorted_p[lo_idx]
+
+    return poc, vah, val
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # ENGINE
 # ─────────────────────────────────────────────────────────────────────────────
@@ -891,6 +990,11 @@ class DCASpotBacktester:
         self.adx_threshold          = params["adx_threshold"]
         self.trend_direction_filter = params.get("trend_direction_filter", False)
         self.trend_ema_period       = params.get("trend_ema_period", 50)
+        # Volume Profile filter
+        self.vp_filter       = params.get("vp_filter", False)
+        self.vp_lookback     = params.get("vp_lookback", 50)
+        self.vp_mode         = params.get("vp_mode", "Near POC")
+        self.vp_proximity_pct = params.get("vp_proximity_pct", 1.0)
         # Leverage & timeframe
         self.leverage        = params["leverage"]
         self.candle_min      = params["candle_min"]
@@ -1015,6 +1119,17 @@ class DCASpotBacktester:
         else:
             trend_up_vals = [True] * len(closes)   # sentinel
 
+        # Volume Profile filter
+        if self.vp_filter:
+            _vp_poc, _vp_vah, _vp_val = compute_volume_profile(
+                closes, volumes, self.vp_lookback
+            )
+            vp_poc_vals = _vp_poc.tolist()
+            vp_vah_vals = _vp_vah.tolist()
+            vp_val_vals = _vp_val.tolist()
+        else:
+            vp_poc_vals = vp_vah_vals = vp_val_vals = [float("nan")] * len(closes)
+
         trades, equity_curve, micro_trades = [], [self.balance], []
         i = 0
         trade_number = 1
@@ -1110,8 +1225,30 @@ class DCASpotBacktester:
             # Trend direction filter (EMA slope)
             trend_ok = not (self.regime_filter and self.trend_direction_filter) or bool(trend_up_vals[i])
 
+            # Volume Profile filter
+            vp_ok = True
+            if self.vp_filter:
+                poc  = vp_poc_vals[i]
+                vah  = vp_vah_vals[i]
+                val_ = vp_val_vals[i]
+                if poc != poc:   # NaN — not enough history
+                    vp_ok = False
+                else:
+                    prox = self.vp_proximity_pct / 100
+                    near_poc = abs(close_i - poc) / poc <= prox
+                    near_val = abs(close_i - val_) / val_ <= prox if val_ == val_ else False
+                    inside_va = (val_ <= close_i <= vah) if (val_ == val_ and vah == vah) else False
+                    if self.vp_mode == "Near POC":
+                        vp_ok = near_poc
+                    elif self.vp_mode == "Near VAL":
+                        vp_ok = near_val
+                    elif self.vp_mode == "Near POC or VAL":
+                        vp_ok = near_poc or near_val
+                    else:  # Inside Value Area
+                        vp_ok = inside_va
+
             if not (rsi_ok and sma_ok and ema_ok and vol_ok and bb_ok and macd_ok
-                    and bos_ok and sr_ok and ma_cross_ok and candle_ok and regime_ok and trend_ok):
+                    and bos_ok and sr_ok and ma_cross_ok and candle_ok and regime_ok and trend_ok and vp_ok):
                 i += 1
                 continue
 
@@ -1951,7 +2088,7 @@ if run_opt_btn and date_from < date_to:
     def _build_params(tp, dev, so, vs, step_mul, rsi_thr, base_o, so_size, itvl_m,
                       bos_rec=None, sr_lb=None, sr_prox=None, ma_fast=None, ma_slow=None,
                       atr_tp=None, atr_sl=None, sl_pct=None,
-                      adx_thr=None):
+                      adx_thr=None, vp_lb=None, vp_prox=None):
         return {
             "initial_balance":   initial_balance,
             "base_order":        base_o,
@@ -2007,6 +2144,10 @@ if run_opt_btn and date_from < date_to:
             "adx_threshold":          float(adx_thr) if adx_thr is not None else adx_threshold,
             "trend_direction_filter": trend_direction_filter,
             "trend_ema_period":       int(trend_ema_period),
+            "vp_filter":         vp_filter,
+            "vp_lookback":       int(vp_lb) if vp_lb is not None else int(vp_lookback),
+            "vp_mode":           vp_mode,
+            "vp_proximity_pct":  float(vp_prox) if vp_prox is not None else vp_proximity_pct,
             "trailing_tp":       trailing_tp,
             "trail_pct":         trail_pct,
             "stop_loss_enabled": stop_loss_enabled,
@@ -2104,10 +2245,16 @@ if run_opt_btn and date_from < date_to:
         adx_thr_v = (trial.suggest_float("adx_threshold", 10.0, 50.0)
                      if regime_filter and regime_mode != "Any" else adx_threshold)
 
+        vp_lb_v   = (trial.suggest_int(  "vp_lookback",     10, 200)
+                     if vp_filter else vp_lookback)
+        vp_prox_v = (trial.suggest_float("vp_proximity_pct", 0.1, 5.0)
+                     if vp_filter and vp_mode != "Inside Value Area" else vp_proximity_pct)
+
         p = _build_params(tp, dev, so, vs, step_m, rsi_thr, base_o, so_size, store["itvl_min"],
                           bos_rec=bos_rec, sr_lb=sr_lb_v, sr_prox=sr_prox, sl_pct=sl_pct_v,
                           ma_fast=ma_fast, ma_slow=ma_slow,
-                          atr_tp=atr_tp_v, atr_sl=atr_sl_v, adx_thr=adx_thr_v)
+                          atr_tp=atr_tp_v, atr_sl=atr_sl_v, adx_thr=adx_thr_v,
+                          vp_lb=vp_lb_v, vp_prox=vp_prox_v)
         s = _score(p, store["train"], store["train_days"])
         if s is None:
             return float("-inf")
@@ -2134,6 +2281,8 @@ if run_opt_btn and date_from < date_to:
             "ATR TP Mult":      round(atr_tp_v, 2) if atr_dynamic else "—",
             "ATR SL Mult":      round(atr_sl_v, 2) if atr_dynamic else "—",
             "ADX Threshold":    round(adx_thr_v, 1) if (regime_filter and regime_mode != "Any") else "—",
+            "VP Lookback":       vp_lb_v if vp_filter else "—",
+            "VP Proximity %":    round(vp_prox_v, 2) if (vp_filter and vp_mode != "Inside Value Area") else "—",
             "Trades":                        s["trades"],
             "Win Rate (%)":                  round(s["wr"],        1),
             "Net Profit (EUR)":              round(s["net"],       2),
@@ -2220,6 +2369,8 @@ if run_opt_btn and date_from < date_to:
                 "ATR TP Mult":      round(_pr.get("atr_tp_mult",  0), 2) if atr_dynamic else "—",
                 "ATR SL Mult":      round(_pr.get("atr_sl_mult",  0), 2) if atr_dynamic else "—",
                 "ADX Threshold":    round(_pr.get("adx_threshold", 0), 1) if (regime_filter and regime_mode != "Any") else "—",
+                "VP Lookback":       _pr.get("vp_lookback", "—") if vp_filter else "—",
+                "VP Proximity %":    round(_pr.get("vp_proximity_pct", 0), 2) if vp_filter else "—",
                 "Trades":                        "–",
                 "Win Rate (%)":                  "–",
                 "Net Profit (EUR)":              "–",
@@ -2307,11 +2458,14 @@ if run_opt_btn and date_from < date_to:
     best_atr_tp   = bp.get("atr_tp_mult",    atr_tp_mult)
     best_atr_sl   = bp.get("atr_sl_mult",    atr_sl_mult)
     best_adx_thr  = bp.get("adx_threshold",  adx_threshold)
+    best_vp_lb   = bp.get("vp_lookback",      vp_lookback)
+    best_vp_prox = bp.get("vp_proximity_pct", vp_proximity_pct)
     best_p        = _build_params(best_tp, best_dev, best_so, best_vs, best_step,
                                   best_rsi, best_base, best_so_sz, best_store["itvl_min"],
                                   bos_rec=best_bos_rec, sr_lb=best_sr_lb, sr_prox=best_sr_prox,
                                   sl_pct=best_sl_pct, ma_fast=best_ma_fast, ma_slow=best_ma_slow,
-                                  atr_tp=best_atr_tp, atr_sl=best_atr_sl, adx_thr=best_adx_thr)
+                                  atr_tp=best_atr_tp, atr_sl=best_atr_sl, adx_thr=best_adx_thr,
+                                  vp_lb=best_vp_lb, vp_prox=best_vp_prox)
     # Always recompute train & val scores from the backtester — never read from the
     # trials table, which may have "–" placeholders for DB-loaded prior trials.
     train_score = _score(best_p, best_store["train"], best_store["train_days"])
@@ -2375,6 +2529,8 @@ if run_opt_btn and date_from < date_to:
             "ma_fast_period": "MA Fast", "ma_slow_period": "MA Slow",
             "atr_tp_mult": "ATR TP Mult", "atr_sl_mult": "ATR SL Mult",
             "adx_threshold": "ADX Threshold",
+            "vp_lookback": "VP Lookback",
+            "vp_proximity_pct": "VP Proximity %",
         }
         imp_df = pd.DataFrame({
             "Parameter":  [_labels.get(k, k) for k in importance],
@@ -2431,5 +2587,6 @@ if run_opt_btn and date_from < date_to:
         + (f", SR Lookback {best_sr_lb} / Proximity {best_sr_prox:.1f}%" if sr_filter else "")
         + (f", MA Fast {best_ma_fast} / Slow {best_ma_slow}" if ma_cross_filter else "")
         + (f", ATR TP×{best_atr_tp:.1f} SL×{best_atr_sl:.1f}" if atr_dynamic else "")
+        + (f", VP Lookback {best_vp_lb} / Proximity {best_vp_prox:.1f}%" if vp_filter else "")
         + " — then click 🚀 Run Backtest."
     )
