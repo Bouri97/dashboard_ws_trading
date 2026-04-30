@@ -1,0 +1,21 @@
+{
+  "top_params": [
+    {
+      "params": {
+        "pair": "BTC-EUR|1d",
+        "base_order": 5.6,
+        "safety_order": 5.9,
+        "tp_pct": 1.46,
+        "dev_pct": 0.37,
+        "max_so": 10,
+        "vol_scale": 1.1,
+        "step_mul": 0.9,
+        "sl_pct": 17.5,
+        "sr_lookback": 5,
+        "sr_proximity": 9.8
+      },
+      "value": 2705.08,
+      "study": "known_good_baseline"
+    }
+  ]
+}

@@ -667,28 +667,28 @@ with st.sidebar.expander("🤖 Auto-Optimizer", expanded=False):
 
     st.markdown("**DCA parameter ranges** *(min → max)*")
     if opt_sweep_tp:
-        opt_tp_min = _c1.number_input("TP % min", value=0.3, min_value=0.1, step=0.1, key="opt_tp_min", format="%.1f")
-        opt_tp_max = _c2.number_input("TP % max", value=5.0, min_value=0.2, step=0.5, key="opt_tp_max", format="%.1f")
+        opt_tp_min = _c1.number_input("TP % min", value=1.1, min_value=0.1, step=0.1, key="opt_tp_min", format="%.1f")
+        opt_tp_max = _c2.number_input("TP % max", value=1.8, min_value=0.2, step=0.1, key="opt_tp_max", format="%.1f")
     else:
         opt_tp_min = opt_tp_max = take_profit_pct
     if opt_sweep_dev:
-        opt_dev_min = _c1.number_input("Dev % min", value=0.3, min_value=0.1, step=0.1, key="opt_dev_min", format="%.1f")
-        opt_dev_max = _c2.number_input("Dev % max", value=3.0, min_value=0.2, step=0.5, key="opt_dev_max", format="%.1f")
+        opt_dev_min = _c1.number_input("Dev % min", value=0.2, min_value=0.1, step=0.05, key="opt_dev_min", format="%.2f")
+        opt_dev_max = _c2.number_input("Dev % max", value=0.6, min_value=0.1, step=0.05, key="opt_dev_max", format="%.2f")
     else:
         opt_dev_min = opt_dev_max = deviation_pct
     if opt_sweep_so:
-        opt_so_min = _c1.number_input("SOs min", value=2, min_value=1, step=1, key="opt_so_min")
-        opt_so_max = _c2.number_input("SOs max", value=10, min_value=2, step=1, key="opt_so_max")
+        opt_so_min = _c1.number_input("SOs min", value=8,  min_value=1, step=1, key="opt_so_min")
+        opt_so_max = _c2.number_input("SOs max", value=12, min_value=2, step=1, key="opt_so_max")
     else:
         opt_so_min = opt_so_max = max_safety_orders
     if opt_sweep_vs:
-        opt_vs_min = _c1.number_input("VolScale min", value=1.0, min_value=1.0, step=0.05, key="opt_vs_min", format="%.2f")
-        opt_vs_max = _c2.number_input("VolScale max", value=1.3, min_value=1.0, step=0.05, key="opt_vs_max", format="%.2f")
+        opt_vs_min = _c1.number_input("VolScale min", value=1.0,  min_value=1.0, step=0.01, key="opt_vs_min", format="%.2f")
+        opt_vs_max = _c2.number_input("VolScale max", value=1.22, min_value=1.0, step=0.01, key="opt_vs_max", format="%.2f")
     else:
         opt_vs_min = opt_vs_max = volume_scale
     if opt_sweep_step:
-        opt_step_min = _c1.number_input("StepMul min", value=0.8, min_value=0.1, step=0.1, key="opt_step_min", format="%.1f")
-        opt_step_max = _c2.number_input("StepMul max", value=2.0, min_value=0.2, step=0.1, key="opt_step_max", format="%.1f")
+        opt_step_min = _c1.number_input("StepMul min", value=0.7, min_value=0.1, step=0.05, key="opt_step_min", format="%.2f")
+        opt_step_max = _c2.number_input("StepMul max", value=1.1, min_value=0.2, step=0.05, key="opt_step_max", format="%.2f")
     else:
         opt_step_min = opt_step_max = step_multiplier
     if rsi_filter and opt_sweep_rsi:
@@ -699,17 +699,17 @@ with st.sidebar.expander("🤖 Auto-Optimizer", expanded=False):
 
     if stop_loss_enabled and opt_sweep_sl:
         st.markdown("**Stop Loss range** *(min → max)*")
-        opt_sl_min = _c1.number_input("SL % min", value=2.0, min_value=0.1, step=0.5, key="opt_sl_min", format="%.1f")
-        opt_sl_max = _c2.number_input("SL % max", value=15.0, min_value=0.5, step=0.5, key="opt_sl_max", format="%.1f")
+        opt_sl_min = _c1.number_input("SL % min", value=12.0, min_value=0.1, step=0.5, key="opt_sl_min", format="%.1f")
+        opt_sl_max = _c2.number_input("SL % max", value=22.0, min_value=0.5, step=0.5, key="opt_sl_max", format="%.1f")
     else:
         opt_sl_min = opt_sl_max = stop_loss_pct
 
     if sr_filter and opt_sweep_sr:
         st.markdown("**S&R Filter ranges** *(min → max)*")
-        opt_sr_lb_min   = _c1.number_input("S&R Lookback min", value=20,  min_value=5,  step=5,   key="opt_sr_lb_min")
-        opt_sr_lb_max   = _c2.number_input("S&R Lookback max", value=100, min_value=10, step=10,  key="opt_sr_lb_max")
-        opt_sr_prox_min = _c1.number_input("SR Prox % min",    value=0.5, min_value=0.1, step=0.5, key="opt_sr_prox_min", format="%.1f")
-        opt_sr_prox_max = _c2.number_input("SR Prox % max",    value=5.0, min_value=0.5, step=0.5, key="opt_sr_prox_max", format="%.1f")
+        opt_sr_lb_min   = _c1.number_input("S&R Lookback min", value=3,   min_value=1,  step=1,   key="opt_sr_lb_min")
+        opt_sr_lb_max   = _c2.number_input("S&R Lookback max", value=15,  min_value=2,  step=1,   key="opt_sr_lb_max")
+        opt_sr_prox_min = _c1.number_input("SR Prox % min",    value=5.0, min_value=0.1, step=0.5, key="opt_sr_prox_min", format="%.1f")
+        opt_sr_prox_max = _c2.number_input("SR Prox % max",    value=15.0, min_value=0.5, step=0.5, key="opt_sr_prox_max", format="%.1f")
     else:
         opt_sr_lb_min = opt_sr_lb_max = sr_lookback
         opt_sr_prox_min = opt_sr_prox_max = sr_proximity_pct
