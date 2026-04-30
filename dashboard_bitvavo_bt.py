@@ -2527,8 +2527,19 @@ if run_opt_btn and date_from < date_to:
             f"{_prev_trials_count} existing trial(s) loaded from disk."
         )
 
-    study.optimize(objective, n_trials=int(opt_trials), callbacks=[_on_trial],
-                   show_progress_bar=False)
+    try:
+        study.optimize(objective, n_trials=int(opt_trials), callbacks=[_on_trial],
+                       show_progress_bar=False)
+    except ValueError as _ve:
+        if "dynamic value space" in str(_ve) or "CategoricalDistribution" in str(_ve):
+            import os as _os_ve
+            _os_ve.remove(str(_db_file))
+            st.warning(
+                "⚠️ Existing study had different pairs/timeframes. "
+                "Cleared stale database — **click Run again** to start fresh."
+            )
+            st.stop()
+        raise
 
     prog_bar.empty()
     live_best.empty()
