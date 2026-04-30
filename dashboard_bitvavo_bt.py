@@ -611,6 +611,19 @@ with st.sidebar.expander("🤖 Auto-Optimizer", expanded=False):
         opt_sr_lb_min = opt_sr_lb_max = sr_lookback
         opt_sr_prox_min = opt_sr_prox_max = sr_proximity_pct
 
+    if vp_filter:
+        st.markdown("**Volume Profile ranges** *(min → max)*")
+        opt_vp_lb_min   = _c1.number_input("VP Lookback min",   value=20,  min_value=10, step=10,  key="opt_vp_lb_min")
+        opt_vp_lb_max   = _c2.number_input("VP Lookback max",   value=200, min_value=20, step=10,  key="opt_vp_lb_max")
+        if vp_mode != "Inside Value Area":
+            opt_vp_prox_min = _c1.number_input("VP Prox % min", value=0.1, min_value=0.1, step=0.1, key="opt_vp_prox_min", format="%.1f")
+            opt_vp_prox_max = _c2.number_input("VP Prox % max", value=5.0, min_value=0.2, step=0.5, key="opt_vp_prox_max", format="%.1f")
+        else:
+            opt_vp_prox_min = opt_vp_prox_max = vp_proximity_pct
+    else:
+        opt_vp_lb_min = opt_vp_lb_max = vp_lookback
+        opt_vp_prox_min = opt_vp_prox_max = vp_proximity_pct
+
     st.caption(
         "ℹ️ **Timeframe** is already swept automatically — add multiple timeframes in "
         "**Assets & Timeframes** above and the optimizer will test each combination."
@@ -2245,9 +2258,13 @@ if run_opt_btn and date_from < date_to:
         adx_thr_v = (trial.suggest_float("adx_threshold", 10.0, 50.0)
                      if regime_filter and regime_mode != "Any" else adx_threshold)
 
-        vp_lb_v   = (trial.suggest_int(  "vp_lookback",     10, 200)
+        vp_lb_v   = (trial.suggest_int(  "vp_lookback",
+                                          max(int(opt_vp_lb_min), 10),
+                                          max(int(opt_vp_lb_max), int(opt_vp_lb_min) + 10))
                      if vp_filter else vp_lookback)
-        vp_prox_v = (trial.suggest_float("vp_proximity_pct", 0.1, 5.0)
+        vp_prox_v = (trial.suggest_float("vp_proximity_pct",
+                                          max(opt_vp_prox_min, 0.1),
+                                          max(opt_vp_prox_max, opt_vp_prox_min + 0.1))
                      if vp_filter and vp_mode != "Inside Value Area" else vp_proximity_pct)
 
         p = _build_params(tp, dev, so, vs, step_m, rsi_thr, base_o, so_size, store["itvl_min"],
